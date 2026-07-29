@@ -15,40 +15,34 @@
 
 | 文件 | 类型 | 用途 |
 |------|------|------|
-| `src/core/interfaces.py` | ✅ 设计完整 | DataSource/NewsSource/Strategy/Executor 接口 |
-| `src/core/types.py` | ✅ 设计完整 | 全部 DTO 模型（Quote/Kline/Signal/Position/...） |
+| `src/core/interfaces.py` | ✅ 设计完整 | DataSource(含get_symbols)/NewsSource/Strategy/Executor/SafetyRule |
+| `src/core/types.py` | ✅ 设计完整 | 全部DTO，含AnalysisContext.news_sentiment + AccountBalance.available_balance |
 | `src/core/exceptions.py` | ✅ 设计完整 | 自定义异常体系 |
 | `src/datasources/base.py` | ✅ 设计完整 | 基类 + DataSourceRegistry |
 | `src/datasources/news/registry.py` | ✅ 设计完整 | 新闻源注册 + 主/备用降级 |
 | `src/trading/executor.py` | ✅ 设计完整 | Executor 抽象接口 |
 
-### 实现存根（伪代码 — 待编码）
+### 逻辑检查状态
 
-| 文件 | TODO |
-|------|------|
-| `src/datasources/bitget/market.py` | `TODO[Phase1]` Bitget 行情/K线/订单本 |
-| `src/datasources/bitget/symbols.py` | `TODO[Phase1]` 合约信息 |
-| `src/datasources/bitget/rate_limiter.py` | `TODO[Phase1]` 限速器 |
-| `src/datasources/eastmoney/search.py` | `TODO[Phase1]` 代码搜索 |
-| `src/datasources/eastmoney/quote.py` | `TODO[Phase1]` Push2 报价 |
-| `src/datasources/eastmoney/fundamentals.py` | `TODO[Phase1]` 基本面数据 |
-| `src/datasources/news/searxng.py` | `TODO[Phase1]` 新闻获取 |
-| `src/cache/memory.py` | `TODO[Phase1]` 内存缓存 |
-| `src/cache/persistent.py` | `TODO[Phase1]` SQLite K线缓存 |
-| `src/config/loader.py` | `TODO[Phase1]` 配置加载 + 热更新 |
-| `src/main.py` | `TODO[Phase1]` CLI 入口 |
+| 检查项 | 状态 |
+|--------|------|
+| 接口定义 vs 伪代码使用 | ✅ 已对齐 |
+| 数据模型字段一致性 | ✅ 已修复所有不匹配 |
+| 方法命名一致性 | ✅ `calculate()` → `score()` 已统一 |
+| 未定义函数/方法 | ✅ 补全 `_in_cooldown()` / `build_reason()` / `parse_search_result()` / 背离检测 |
+| RSI 策略 `_prev_macd` 初始化 | ✅ 已修复 |
+| SentimentAnalyzer 伪代码 | ✅ 已补全 |
+| Fundamental 评分 net_margin | ✅ 已补充 |
+| config.yaml 策略结构 | ✅ 列表格式修正 |
 
-### Phase 2 设计文档
+### 设计文档
 
 | 文件 | 内容 |
 |------|------|
-| `PHASE2_DESIGN.md` | 完整设计（技术指标/市场状态/三大策略/评分器/AI分析器） |
-| `src/analyzers/*` | 伪代码设计 |
-| `src/strategies/*` | 伪代码设计 |
-| `src/signals/*` | 伪代码设计 |
+| `PHASE2_DESIGN.md` | 技术指标/市场状态/SentimentAnalyzer/三大策略/评分器/AI分析器 |
+| (外部) `PSEUDOCODE.md` | 13个模块伪代码 |
 
-## 文件数统计
+## 文件统计
 
-- 架构核心（保留）：~1500 行
-- 实现存根（TODO）：~500 行
-- 设计文档：~70KB（PLAN + PSEUDOCODE + PHASE2_DESIGN）
+- 架构核心（保留）：~1600 行
+- 设计文档：~75KB（PLAN + PSEUDOCODE + PHASE2_DESIGN）

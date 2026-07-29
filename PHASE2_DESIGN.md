@@ -191,7 +191,83 @@ def _calc_adx(high, low, close, period=14):
     # DX = abs(+DI - -DI) / (+DI + -DI) * 100
     # ADX = EMA(DX, period)
     pass
+```
 
+## 三-A. 新闻情绪分析
+
+```python
+# src/analyzers/sentiment.py
+
+class SentimentAnalyzer:
+    """
+    新闻情绪分析器。
+    基于关键词打分，无需外部 API。
+    """
+
+    # 正面关键词
+    POSITIVE_WORDS = {
+        "beat", "surge", "upgrade", "bullish", "outperform",
+        "growth", "record", "profit", "positive", "innovation",
+        "expansion", "partnership", "launch", "breakthrough",
+        "dividend", "buyback", "upgraded", "exceed",
+    }
+
+    # 负面关键词
+    NEGATIVE_WORDS = {
+        "drop", "downgrade", "bearish", "loss", "decline",
+        "lawsuit", "investigation", "recall", "layoff",
+        "miss", "underperform", "regulatory", "fine",
+        "restructuring", "write-down", "delay", "ban",
+    }
+
+    def score(self, news_items: list[NewsItem]) -> dict:
+        """
+        对新闻列表进行情绪打分。
+
+        Returns:
+            {"positive": 0.0-1.0, "negative": 0.0-1.0, "neutral": 0.0-1.0,
+             "overall": -1.0-1.0, "count": int}
+        """
+        if not news_items:
+            return {"positive": 0.0, "negative": 0.0,
+                    "neutral": 1.0, "overall": 0.0, "count": 0}
+
+        pos_count = 0
+        neg_count = 0
+
+        for item in news_items:
+            text = (item.title + " " + item.snippet).lower()
+            pos_matches = sum(1 for w in self.POSITIVE_WORDS if w in text)
+            neg_matches = sum(1 for w in self.NEGATIVE_WORDS if w in text)
+
+            if pos_matches > neg_matches:
+                pos_count += 1
+            elif neg_matches > pos_matches:
+                neg_count += 1
+            # else: neutral (equally matched or none)
+
+        total = len(news_items)
+        pos_ratio = pos_count / total
+        neg_ratio = neg_count / total
+        neu_ratio = 1.0 - pos_ratio - neg_ratio
+
+        return {
+            "positive": round(pos_ratio, 2),
+            "negative": round(neg_ratio, 2),
+            "neutral": round(neu_ratio, 2),
+            "overall": round(pos_ratio - neg_ratio, 2),  # -1 ~ +1
+            "count": total,
+        }
+
+    def to_score_100(self, sentiment: dict) -> float:
+        """
+        将情绪结果映射到 0-100 分数。
+        sentiment.overall = -1 (极负面) → score = 0
+        sentiment.overall =  0 (中性)   → score = 50
+        sentiment.overall = +1 (极正面) → score = 100
+        """
+        return (sentiment["overall"] + 1) * 50
+```
 
 def _detect_regime(adx, ma_short, ma_long, atr_percentile):
     """
@@ -383,7 +459,7 @@ class TrendBreakStrategy(SignalStrategy):
                     entry * (1 + p.take_profit_1),
                     entry * (1 + p.take_profit_2),
                 ],
-                reason=self._build_reason(bull_flags, ind),
+                reason=self._build_reason(bull_flags, ind, p),
             )
 
         # ==== 空头 (死叉) ====
@@ -409,6 +485,33 @@ class TrendBreakStrategy(SignalStrategy):
             )
 
         return None
+
+    # ─── 辅助方法 ────────────────────────────────
+
+    def _in_cooldown(self, symbol: str, side: str, klines: list[Kline],
+                     cooldown_bars: int) -> bool:
+        """
+        检查同方向冷却期。
+        从上一次信号到现在是否不足 cooldown_bars 根 K 线。
+        """
+        last = self._last_signals.get((symbol, side))
+        if last is None:
+            return False
+        bars_since = len(klines) - last["kline_index"]
+        return bars_since < cooldown_bars
+
+    def _build_reason(self, flags: int, ind: TechnicalIndicators,
+                      p: TrendBreakParams) -> str:
+        parts = [f"MA金叉 {ind.ma10:.1f}>{ind.ma30:.1f}"]
+        if ind.volume_ratio > p.volume_ratio_threshold:
+            parts.append(f"放量{ind.volume_ratio:.1f}x")
+        parts.append(f"RSI{ind.rsi14:.0f}")
+        if flags >= 4:
+            parts.append("强势")
+        return " ".join(parts)
+
+    # 存储上次信号用于冷却期检测
+    _last_signals: dict = {}
 ```
 
 ### 策略 B: RSI 反弹策略
@@ -433,6 +536,9 @@ class RsiBounceStrategy(SignalStrategy):
     id = "rsi_bounce"
     name = "RSI 超卖反弹"
     params: RsiBounceParams
+
+    def __init__(self):
+        self._prev_macd: float = 0.0   # 用于 MACD 背离检测的前值
 
     async def evaluate(self, ctx: AnalysisContext) -> Optional[Signal]:
         p = self.params
@@ -509,12 +615,40 @@ class RsiBounceStrategy(SignalStrategy):
             价格创新低 (close < prev_low)
             但 MACD 没有创新低 (macd > prev_macd)
         """
-        # 取最近两根 K 线的低点和 MACD 值比较
         if len(klines) < 5:
             return False
         price_lower = klines[-1].low < klines[-3].low
         macd_higher = ind.macd > self._prev_macd
+        # 更新前值供下次判断
+        self._prev_macd = ind.macd
         return price_lower and macd_higher
+
+    def _detect_bearish_divergence(self, klines, ind) -> bool:
+        """
+        MACD 顶背离:
+            价格创新高 (close > prev_high)
+            但 MACD 没有创新高 (macd < prev_macd)
+        """
+        if len(klines) < 5:
+            return False
+        price_higher = klines[-1].high > klines[-3].high
+        macd_lower = ind.macd < self._prev_macd
+        self._prev_macd = ind.macd
+        return price_higher and macd_lower
+
+    def _near_support(self, klines, atr) -> bool:
+        """价格是否接近支撑位（最近20根K线最低点 ± 1 ATR）"""
+        if len(klines) < 20:
+            return False
+        support = min(k.low for k in klines[-20:])
+        return abs(klines[-1].close - support) <= atr * 1.5
+
+    def _near_resistance(self, klines, atr) -> bool:
+        """价格是否接近阻力位（最近20根K线最高点 ± 1 ATR）"""
+        if len(klines) < 20:
+            return False
+        resistance = max(k.high for k in klines[-20:])
+        return abs(resistance - klines[-1].close) <= atr * 1.5
 ```
 
 ### 策略 C: AI 综合策略
@@ -689,14 +823,17 @@ class SignalScorer:
         基本面分计算。基准 50 分。
 
         加分项:
-            revenue_yoy > 20%  → +15
-            net_profit_yoy > 20% → +10
-            roe > 15%           → +10
-            gross_margin > 40%  → +5
+            revenue_yoy > 20%      → +15
+            net_profit_yoy > 20%   → +10
+            roe > 15%              → +10
+            gross_margin > 40%     → +5
+            net_margin > 15%       → +5      (高净利率说明盈利能力好)
+            eps > 0                → +5      (正的每股收益)
 
         减分项:
-            debt_ratio > 70%    → -10
-            net_profit < 0      → -20
+            debt_ratio > 70%       → -10
+            net_profit < 0         → -20
+            net_margin < 0         → -10     (负净利率)
 
         score = clamp(50 + adjustments, 0, 100)
         """

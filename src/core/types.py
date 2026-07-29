@@ -203,6 +203,7 @@ class AnalysisContext:
     news: list[NewsItem]
     market_regime: MarketRegime
     current_position: Optional["Position"] = None
+    news_sentiment: Optional[dict] = None  # {"positive": x, "negative": x, "neutral": x}
 
 
 # ==================== 交易类型 ====================
@@ -277,6 +278,11 @@ class AccountBalance:
     total_trades: int = 0
     win_count: int = 0
     loss_count: int = 0
+
+    @property
+    def available_balance(self) -> float:
+        """可用余额"""
+        return self.current_balance - self.used_margin
 
 
 # ==================== 策略参数类型 ====================

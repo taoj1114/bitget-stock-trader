@@ -38,7 +38,25 @@ cache:
   kline_ttl: 86400    # K线持久化 TTL (秒)
 
 # 策略 (Phase 2 启用)
-strategies: {}
+strategies:
+  - id: trend_break
+    enabled: true
+    weight: 1.0
+    params:
+      fast_ma: 10
+      slow_ma: 30
+      volume_ratio_threshold: 1.5
+  - id: rsi_bounce
+    enabled: true
+    weight: 0.8
+    params:
+      rsi_period: 14
+      oversold: 30
+  - id: ai_composite
+    enabled: true
+    weight: 1.2
+    params:
+      model: deepseek-v4-pro
 
 # 风控 (Phase 3 启用)
 safety:

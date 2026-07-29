@@ -52,6 +52,11 @@ class DataSource(ABC):
         """获取订单本深度"""
         ...
 
+    @abstractmethod
+    async def get_symbols(self) -> list[ContractInfo]:
+        """获取可交易合约列表"""
+        ...
+
 
 class FundamentalSource(ABC):
     """基本面数据源（Eastmoney 等）"""
@@ -176,8 +181,8 @@ class SafetyRule(Protocol):
     def name(self) -> str:
         ...
 
-    async def check_order(self, order) -> tuple[bool, str]:
-        """检查订单。返回 (通过?, 拒绝原因)"""
+    async def check_order(self, order) -> "SafetyVerdict":
+        """检查订单。返回 SafetyVerdict(passed=True/False, reason=...)"""
         ...
 
 

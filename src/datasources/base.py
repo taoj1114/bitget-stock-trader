@@ -23,6 +23,9 @@ class BaseDataSource(DataSource):
     async def get_order_book(self, symbol: str, limit: int = 50) -> Optional[OrderBook]:
         return None
 
+    async def get_symbols(self) -> list[ContractInfo]:
+        raise NotImplementedForPhase("1", f"{self.name}.get_symbols()")
+
 
 class BaseFundamentalSource(FundamentalSource):
     @property
