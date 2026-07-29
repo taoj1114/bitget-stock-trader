@@ -1,53 +1,35 @@
-"""新闻源接口定义"""
+"""SearXNG 新闻源
 
-from abc import abstractmethod
+============================================================
+TODO[Phase1]: 实现 SearXNG 新闻获取
+============================================================
+
+API 端点:
+    GET http://localhost:8080/search?q={query}+stock&format=json&categories=news&language=en
+        → results: [{title, content, url, engine, publishedDate}]
+
+接口:
+    class SearXNGNewsSource(BaseNewsSource):
+        async def fetch_news(self, query: str, max_results: int = 15) -> list[NewsItem]
+
+参考:
+    - 伪代码: PSEUDOCODE.md 第5节
+    - SearXNG 运行在 localhost:8080 (Docker)
+    - 已验证: curl "http://localhost:8080/search?q=AAPL+stock&format=json&categories=news"  # 41 results
+
+注意事项:
+    - ⚠️ publishedDate 可能为 None（SearXNG 不保证时间戳）
+    - AI 分析时需在 prompt 中标注"新闻无确切时间"
+    - 搜索失败时返回空列表，不要抛异常
+"""
+
 from typing import Optional
-
 from src.core.types import NewsItem
 from src.datasources.base import BaseNewsSource
 
 
 class SearXNGNewsSource(BaseNewsSource):
-    """SearXNG 新闻源 — 通过本地 SearXNG 实例获取聚合新闻"""
-
-    def __init__(self, base_url: str = "http://localhost:8080",
-                 max_results: int = 15, timeout: int = 10):
-        self.base_url = base_url.rstrip("/")
-        self.max_results = max_results
-        self.timeout = timeout
+    """SearXNG 新闻源"""
 
     async def fetch_news(self, query: str, max_results: Optional[int] = None) -> list[NewsItem]:
-        """从 SearXNG 获取新闻
-
-        ⚠️ SearXNG 不返回 publishedDate，AI 分析时需注意
-        """
-        import httpx
-
-        max_results = max_results or self.max_results
-        url = f"{self.base_url}/search"
-        params = {
-            "q": f"{query} stock",
-            "format": "json",
-            "categories": "news",
-            "pageno": 1,
-            "language": "en",
-        }
-
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(url, params=params)
-                data = resp.json()
-        except Exception as e:
-            print(f"[SearXNG] 请求失败: {e}")
-            return []
-
-        items = []
-        for r in data.get("results", [])[:max_results]:
-            items.append(NewsItem(
-                title=r.get("title", ""),
-                snippet=r.get("content", ""),
-                url=r.get("url", ""),
-                source=r.get("engine", "searxng"),
-                published_at=r.get("publishedDate"),  # 可能为 None
-            ))
-        return items
+        raise NotImplementedError("TODO[Phase1]: 实现 SearXNGNewsSource.fetch_news()")

@@ -1,114 +1,68 @@
-"""配置管理 — 加载 + 热更新"""
+"""配置管理 — 加载 + 热更新
 
-from __future__ import annotations
+============================================================
+TODO[Phase1]: 实现配置加载
+============================================================
 
-import os
-import time
-from pathlib import Path
-from typing import Any
+配置源:
+    1. config.yaml (主配置)
+    2. 环境变量覆盖 (STOCK_TRADER_CONFIG)
+    3. 热更新: 检测文件 mtime 变更
 
-import yaml
+config.yaml 结构:
+    mode: paper
+    symbols: [AAPL, NVDA, ...]
+    datasources:
+        bitget: {base_url, rate_limit}
+        eastmoney: {mode}
+    news_sources:
+        primary: searxng
+        fallback: null
+        searxng: {base_url, max_results, timeout}
+    cache: {memory_ttl, kline_ttl}
+    api: {host, port}
+
+接口:
+    class Config:
+        def __init__(self, path: str = "config.yaml")
+        def load(self) -> None
+        def reload_if_changed(self) -> bool
+        def get(self, key: str, default=None) -> Any  # 点号路径: "datasources.bitget.base_url"
+        # 便捷属性: mode, symbols, bitget_base_url, searxng_base_url, ...
+
+单例:
+    def get_config() -> Config    # 全局配置实例
+    def hot_reload() -> bool      # 热重载
+"""
+
+from typing import Any, Optional
 
 
 class Config:
-    """配置管理器。支持 YAML 文件 + 环境变量覆盖。"""
+    """配置管理器"""
 
     def __init__(self, path: str = "config.yaml"):
-        self._path = Path(path)
-        self._data: dict[str, Any] = {}
-        self._mtime: float = 0
-        self.load()
+        raise NotImplementedError("TODO[Phase1]: 实现 Config.__init__()")
 
     def load(self) -> None:
-        """加载配置"""
-        if not self._path.exists():
-            raise FileNotFoundError(f"配置文件不存在: {self._path}")
-        with open(self._path) as f:
-            self._data = yaml.safe_load(f) or {}
-        self._mtime = self._path.stat().st_mtime
+        raise NotImplementedError("TODO[Phase1]: 实现 Config.load()")
 
     def reload_if_changed(self) -> bool:
-        """如果文件变更则重新加载。返回是否重载。"""
-        try:
-            mtime = self._path.stat().st_mtime
-            if mtime > self._mtime:
-                self.load()
-                return True
-        except OSError:
-            pass
-        return False
+        raise NotImplementedError("TODO[Phase1]: 实现 Config.reload_if_changed()")
 
     def get(self, key: str, default: Any = None) -> Any:
-        """通过点号路径取值: config.get('datasources.bitget.base_url')"""
-        keys = key.split(".")
-        val = self._data
-        for k in keys:
-            if isinstance(val, dict):
-                val = val.get(k)
-            else:
-                return default
-        return val if val is not None else default
-
-    @property
-    def raw(self) -> dict:
-        return self._data
-
-    # ==== 便捷访问属性 ====
-
-    @property
-    def mode(self) -> str:
-        return self.get("mode", "paper")
-
-    @property
-    def symbols(self) -> list[str]:
-        return self.get("symbols", [])
-
-    @property
-    def bitget_base_url(self) -> str:
-        return self.get("datasources.bitget.base_url", "https://api.bitget.com")
-
-    @property
-    def bitget_rate_limit(self) -> int:
-        return self.get("datasources.bitget.rate_limit", 20)
-
-    @property
-    def eastmoney_mode(self) -> str:
-        return self.get("datasources.eastmoney.mode", "auto")
-
-    @property
-    def searxng_base_url(self) -> str:
-        return self.get("news_sources.searxng.base_url", "http://localhost:8080")
-
-    @property
-    def searxng_max_results(self) -> int:
-        return self.get("news_sources.searxng.max_results", 15)
-
-    @property
-    def memory_ttl(self) -> int:
-        return self.get("cache.memory_ttl", 300)
-
-    @property
-    def api_host(self) -> str:
-        return self.get("api.host", "0.0.0.0")
-
-    @property
-    def api_port(self) -> int:
-        return self.get("api.port", 8000)
+        raise NotImplementedError("TODO[Phase1]: 实现 Config.get()")
 
 
-# 全局单例
-_config: Config | None = None
+_config: Optional[Config] = None
 
 
 def get_config() -> Config:
     global _config
     if _config is None:
-        # 支持自定义路径
-        path = os.environ.get("STOCK_TRADER_CONFIG", "config.yaml")
-        _config = Config(path)
+        _config = Config()
     return _config
 
 
 def hot_reload() -> bool:
-    """热重载配置。返回是否变更。"""
     return get_config().reload_if_changed()
