@@ -343,6 +343,21 @@ class PerformanceMetrics:
     sharpe: float = 0.0
     max_drawdown: float = 0.0
     avg_holding_hours: float = 0.0
+    message: str = ""
+    per_strategy: dict = field(default_factory=dict)
+    by_regime: dict = field(default_factory=dict)
+
+
+@dataclass
+class ParamSuggestion:
+    """参数调优建议"""
+    strategy_id: str
+    param_path: str
+    current_value: Any
+    suggested_value: Any
+    confidence: float = 0.5
+    reasoning: str = ""
+    based_on_trades: int = 0
 
 
 @dataclass

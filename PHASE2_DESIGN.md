@@ -409,6 +409,9 @@ class TrendBreakStrategy(SignalStrategy):
     name = "趋势突破"
     params: TrendBreakParams
 
+    def __init__(self):
+        self._last_signals: dict = {}   # 存储上次信号用于冷却期检测
+
     async def evaluate(self, ctx: AnalysisContext) -> Optional[Signal]:
         p = self.params
         ind = ctx.indicators
@@ -510,8 +513,6 @@ class TrendBreakStrategy(SignalStrategy):
             parts.append("强势")
         return " ".join(parts)
 
-    # 存储上次信号用于冷却期检测
-    _last_signals: dict = {}
 ```
 
 ### 策略 B: RSI 反弹策略

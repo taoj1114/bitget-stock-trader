@@ -78,12 +78,22 @@ slippage:
 cold_start:
   evaluation_trades: 30
 
-# 优化 (Phase 4 启用)
-optimization:
-  auto_tune: false
-  trades_per_analysis: 50
-
 # API 服务
 api:
   host: "0.0.0.0"
   port: 8000
+  cors_origins: ["*"]
+
+# 优化 (Phase 4 启用)
+optimization:
+  auto_tune: false
+  trades_per_analysis: 50
+  trigger_interval: "weekly"
+  rollback_enabled: true
+  rollback_threshold: 0.9
+
+# AI 模型 (Phase 4 启用)
+deepseek:
+  api_key: ""
+  base_url: "https://opencode.ai/zen/go/v1"
+  model: "deepseek-v4-pro"

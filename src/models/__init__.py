@@ -8,6 +8,6 @@ __all__ = [
     "Signal", "EffectiveSignal", "ScoreResult", "AnalysisContext",
     "Position", "Order", "OrderResult", "TradeRecord", "AccountBalance",
     "StrategyParams", "TrendBreakParams", "RsiBounceParams", "AiCompositeParams",
-    "PerformanceMetrics", "StrategyStatus",
+    "PerformanceMetrics", "ParamSuggestion", "StrategyStatus",
     "SafetyVerdict", "SafetyEvent",
 ]

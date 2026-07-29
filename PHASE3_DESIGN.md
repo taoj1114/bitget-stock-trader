@@ -133,6 +133,14 @@ class PaperExecutor(Executor):
         if not verdict.passed:
             return OrderResult(status="REJECTED", reason=verdict.reason)
 
+        # 检查是否已有同品种持仓 (防止覆盖)
+        if signal.symbol in self.positions:
+            existing = self.positions[signal.symbol]
+            return OrderResult(
+                status="REJECTED",
+                reason=f"{signal.symbol} 已有持仓 ({existing.side} {existing.quantity}@${existing.entry_price:.2f})"
+            )
+
         # 滑点计算
         spread = self.slippage.get_spread(signal.symbol)
         actual_price = signal.entry_price * (1 + spread) if side == "LONG" \
@@ -219,9 +227,11 @@ class PaperExecutor(Executor):
             1. 从 positions 中移除
             2. 获取当前价格 + 滑点
             3. 计算 PnL
-            4. 计算资金费率成本
-            5. 结算余额
-            6. 记录交易日志 → Tracker.record_close
+    """
+
+    async def close_position(self, position_id: str, reason: str) -> OrderResult:
+        """
+        平仓（全平）。
         """
         pos = self.positions.pop(position_id, None)
         if not pos:
@@ -256,6 +266,40 @@ class PaperExecutor(Executor):
             reason=reason,
         )
 
+    async def _partial_close(self, pos: Position, close_qty: float, reason: str) -> OrderResult:
+        """
+        分批平仓（部分平仓）。
+        从持仓中扣除 close_qty，已平部分结算盈亏。
+        """
+        if close_qty <= 0 or close_qty > pos.quantity:
+            return OrderResult(status="REJECTED", reason=f"无效分批数量: {close_qty}")
+
+        exit_price = self._get_exit_price(pos)
+
+        if pos.side == "LONG":
+            pnl = (exit_price - pos.entry_price) * close_qty
+        else:
+            pnl = (pos.entry_price - exit_price) * close_qty
+
+        pos.quantity -= close_qty
+        self.balance.current_balance += exit_price * close_qty
+        self.balance.used_margin -= pos.entry_price * close_qty
+        self.balance.total_pnl += pnl
+
+        Tracker.record_close(pos, exit_price, pnl, 0, reason)
+
+        return OrderResult(status="PARTIAL_CLOSED", fill_price=exit_price,
+                           fill_quantity=close_qty, reason=reason)
+
+    def _get_exit_price(self, pos: Position) -> float:
+        """获取平仓价（含滑点）"""
+        quote = get_latest_quote(pos.symbol)
+        spread = self.slippage.get_spread(pos.symbol)
+        if pos.side == "LONG":
+            return quote.mark_price * (1 - spread)
+        else:
+            return quote.mark_price * (1 + spread)
+
     def _calc_position_size(self, signal: Signal) -> float:
         """计算仓位大小 (委托给 RiskManager)"""
         return self.risk.calc_position_size(
@@ -278,6 +322,19 @@ class PaperExecutor(Executor):
 
         资金费率每 8h 结算一次 (Bitget 美股合约)。
         cost = mark_price × quantity × funding_rate × intervals
+
+        ⚠️ 简化版本使用当前 funding_rate 近似计算。
+        精确实现需要在每个结算周期记录当时的 funding_rate 快照。
+        如果当前费率在持仓期间大幅变化，可以引入历史费率追踪:
+
+            rate_snapshots = [
+                {"time": opened_at, "rate": pos.opening_rate},
+                {"time": ...,       "rate": ...},
+            ]
+            total_cost = sum(mark_price × quantity × rate for each interval)
+
+        当前简化为:
+            cost = mark_price × quantity × |current_funding_rate| × intervals
         """
         hours = (datetime.now() - pos.opened_at).total_seconds() / 3600
         intervals = hours / 8  # 8h 结算周期
@@ -567,6 +624,7 @@ class SafetyManager:
 
     async def health_check(self, quote, klines) -> tuple[bool, str]:
         """数据健康检查。返回 (通过?, 原因)"""
+        # 检查价格是否异常
         if len(klines) >= 2:
             prev_close = klines[-2].close
             change_pct = abs(quote.price / prev_close - 1) * 100
@@ -574,6 +632,15 @@ class SafetyManager:
                 self._circuit_breaker_active = True
                 self._circuit_breaker_reason = f"价格突变 {change_pct:.1f}%"
                 return (False, self._circuit_breaker_reason)
+
+        # 检查数据是否过期（最后一根K线是否超过30分钟前）
+        if klines:
+            from datetime import datetime, timezone
+            now_ts = datetime.now(timezone.utc).timestamp() * 1000
+            last_kline_age = (now_ts - klines[-1].timestamp) / 1000 / 60  # 分钟
+            if last_kline_age > 30:
+                return (False, f"K线数据过期 ({last_kline_age:.0f}分钟前更新)")
+
         return (True, "")
 ```
 
@@ -586,7 +653,9 @@ class SafetyManager:
 
 class Tracker:
     """
-    交易日志追踪器 — SQLite 存储。
+    交易日志追踪器 — SQLite 存储。所有方法为静态，全局共享。
+
+    首次使用前需调用 init_db() 建表（在 main.py 启动时执行一次）。
 
     表结构:
         CREATE TABLE trades (
@@ -619,6 +688,11 @@ class Tracker:
             strategies_used TEXT
         );
     """
+
+    @staticmethod
+    def init_db():
+        """初始化数据库（建表）。启动时调用一次。"""
+        ...
 
     @staticmethod
     def record_open(position: Position, signal: Signal, spread: float):
