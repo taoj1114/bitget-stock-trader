@@ -1,7 +1,7 @@
 """新闻情绪分析器 — 基于关键词打分"""
 
 import re
-from typing import Optional
+
 
 from src.core.types import NewsItem
 
@@ -54,25 +54,37 @@ class SentimentAnalyzer:
         Returns:
             dict: {"positive": float, "negative": float,
                    "neutral": float, "overall": float,
-                   "count": int}
+                   "count": int, "conflict": bool}
         """
         if not news_items:
             return {"positive": 0.0, "negative": 0.0,
-                    "neutral": 1.0, "overall": 0.0, "count": 0}
+                    "neutral": 1.0, "overall": 0.0,
+                    "count": 0, "conflict": False}
 
         total_score = 0.0
         scored_count = 0
+        has_positive = False
+        has_negative = False
 
         for item in news_items:
             text = cls._normalize(item.title + " " + item.snippet)
-            score = cls._score_text(text)
-            if score != 0:
+            item_score = cls._score_text(text)
+            if item_score > 0:
+                has_positive = True
                 scored_count += 1
-            total_score += score
+            elif item_score < 0:
+                has_negative = True
+                scored_count += 1
+            total_score += item_score
 
         if scored_count == 0:
             return {"positive": 0.0, "negative": 0.0,
-                    "neutral": 1.0, "overall": 0.0, "count": len(news_items)}
+                    "neutral": 1.0, "overall": 0.0,
+                    "count": len(news_items), "conflict": False}
+
+        # 判断是否矛盾: 正/负都有且力量接近
+        conflict = (has_positive and has_negative and
+                    abs(total_score) < scored_count * cls.STRONG_WEIGHT * 0.5)
 
         pos = max(0, total_score / (scored_count * cls.STRONG_WEIGHT))
         neg = max(0, -total_score / (scored_count * cls.STRONG_WEIGHT))
@@ -80,9 +92,10 @@ class SentimentAnalyzer:
 
         # 归一化到 0-1
         total = pos + neg + neu
-        pos /= total
-        neg /= total
-        neu /= total
+        if total > 0:
+            pos /= total
+            neg /= total
+            neu /= total
 
         return {
             "positive": round(pos, 4),
@@ -90,6 +103,7 @@ class SentimentAnalyzer:
             "neutral": round(neu, 4),
             "overall": round(pos - neg, 4),
             "count": len(news_items),
+            "conflict": conflict,
         }
 
     @classmethod
@@ -116,16 +130,21 @@ class SentimentAnalyzer:
         score = 0.0
         words = set(text.split())
 
-        # 多词词组匹配
+        # 追踪已被强词组匹配的词，不再在弱匹配中重复计数
+        scored_words = set()
+
+        # 多词词组匹配（权重高）
         for phrase in cls.STRONG_POSITIVE:
             if phrase in text:
                 score += cls.STRONG_WEIGHT
+                scored_words.update(phrase.split())
         for phrase in cls.STRONG_NEGATIVE:
             if phrase in text:
                 score -= cls.STRONG_WEIGHT
+                scored_words.update(phrase.split())
 
-        # 单次匹配
-        for word in words:
+        # 单词匹配（跳过已被强词组计分的词）
+        for word in words - scored_words:
             if word in cls.WEAK_POSITIVE:
                 score += cls.WEAK_WEIGHT
             if word in cls.WEAK_NEGATIVE:
@@ -143,7 +162,8 @@ class NullSentimentAnalyzer:
     @classmethod
     def score(cls, news_items: list) -> dict:
         return {"positive": 0.0, "negative": 0.0,
-                "neutral": 1.0, "overall": 0.0, "count": len(news_items)}
+                "neutral": 1.0, "overall": 0.0,
+                "count": len(news_items), "conflict": False}
 
     @classmethod
     def to_score_100(cls, sentiment: dict) -> float:

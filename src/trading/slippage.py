@@ -36,9 +36,16 @@ class SlippageModel:
         "etf":     0.8,    # QQQ, SPY, IWM
     }
 
-    # 大盘股名单 (megacap)
+    # 逐级品种名单
     _MEGACAP = {"AAPL", "NVDA", "MSFT", "GOOGL", "AMZN",
                 "META", "TSLA", "AVGO", "BRKB", "JPM"}
+    _LARGE = {"NFLX", "ADBE", "CRM", "ORCL", "INTC", "AMD",
+              "DIS", "NKE", "BA", "GE", "CAT", "UBER", "COST",
+              "PEP", "KO", "XOM", "CVX", "WMT", "PG", "JNJ",
+              "V", "MA", "HD", "MCD", "TMO", "QCOM", "CSCO",
+              "BAC", "WFC", "C", "GS", "VZ", "T"}
+    _ETF = {"QQQ", "SPY", "IWM", "TQQQ", "SQQQ", "SOXX",
+            "XLF", "XLE", "DIA", "VTI", "ARKK"}
 
     def __init__(self, config: dict | None = None):
         self.base_spreads = dict(self.BASE_SPREADS)
@@ -74,13 +81,16 @@ class SlippageModel:
         return f"{self.get_spread(symbol, volatility, now) * 100:.3f}%"
 
     def _current_window(self, now: datetime | None = None) -> str:
-        """判断当前交易时段"""
+        """判断当前交易时段（使用分钟精度避免边界偏移）"""
         now = now or datetime.now(timezone.utc)
-        h = (now + _BJT_OFFSET).hour  # 转北京时间
+        bjt = now + _BJT_OFFSET
+        minutes = bjt.hour * 60 + bjt.minute
 
-        if h >= 21 or h < 4:
+        # regular: 北京时间 21:30 - 次日 04:00
+        if minutes >= 21 * 60 + 30 or minutes < 4 * 60:
             return "regular"
-        if (4 <= h < 6) or (16 <= h < 21):
+        # extended: 04:00-06:00 或 16:00-21:30
+        if (4 * 60 <= minutes < 6 * 60) or (16 * 60 <= minutes < 21 * 60 + 30):
             return "extended"
         return "asia"
 
@@ -89,4 +99,8 @@ class SlippageModel:
         base = symbol.upper().replace("USDT", "")
         if base in self._MEGACAP:
             return self.LIQUIDITY_MAP["megacap"]
+        if base in self._LARGE:
+            return self.LIQUIDITY_MAP["large"]
+        if base in self._ETF:
+            return self.LIQUIDITY_MAP["etf"]
         return self.LIQUIDITY_MAP["mid"]  # 默认中型股
