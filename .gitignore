@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Data
+data/paper_trades.db
+data/kline_cache/
+data/logs/*.log
+!data/logs/.gitkeep
+
+# Config with secrets
+config.local.yaml
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage / reports
+htmlcov/
+.coverage
