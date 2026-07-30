@@ -1,1 +1,1 @@
-"""留空 — Phase 4 实现"""
+"""Web API 模块 — FastAPI 服务 + 路由"""

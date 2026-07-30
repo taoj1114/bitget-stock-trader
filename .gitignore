@@ -5,15 +5,17 @@ __pycache__/
 .venv/
 venv/
 
-# Data
-data/paper_trades.db
+# Secrets
+.env
+config.yaml
+config.local.yaml
+
+# Data (generated at runtime)
+data/*.db
+data/*.json
 data/kline_cache/
 data/logs/*.log
 !data/logs/.gitkeep
-
-# Config with secrets
-config.local.yaml
-.env
 
 # IDE
 .vscode/
@@ -28,3 +30,4 @@ Thumbs.db
 # Coverage / reports
 htmlcov/
 .coverage
+.pytest_cache/

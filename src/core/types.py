@@ -116,6 +116,7 @@ class TechnicalIndicators:
     ma5: float = 0.0
     ma10: float = 0.0
     ma20: float = 0.0
+    ma30: float = 0.0
     ma60: float = 0.0
     ema12: float = 0.0
     ema26: float = 0.0
@@ -174,6 +175,7 @@ class Signal:
     take_profits: list[float]        # 分级止盈价
     reason: str                      # 信号理由
     timestamp: int = 0               # Unix ms
+    generating_params: dict = field(default_factory=dict)  # 产生此信号的策略参数
 
 
 @dataclass
@@ -222,6 +224,9 @@ class Position:
     unrealized_pnl: float = 0.0
     opened_at: datetime = None
     strategy_id: str = ""
+    leverage: int = 1                  # 杠杆倍数
+    funding_rate: float = 0.0          # 开仓时资金费率快照
+    generating_params: dict = field(default_factory=dict)  # 开仓时的策略参数
 
 
 @dataclass
@@ -299,7 +304,7 @@ class TrendBreakParams(StrategyParams):
     """趋势突破策略参数"""
     fast_ma: int = 10
     slow_ma: int = 30
-    volume_ratio_threshold: float = 1.5
+    volume_ratio_threshold: float = 0.8
     rsi_upper: float = 70
     rsi_lower: float = 30
     atr_sl_multiplier: float = 2.0
