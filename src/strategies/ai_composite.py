@@ -23,7 +23,6 @@ import httpx
 
 from src.core.interfaces import SignalStrategy
 from src.core.types import AiCompositeParams, AnalysisContext, Signal
-from src.trading.levels import calc_dynamic_levels
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +50,7 @@ class AICompositeStrategy(SignalStrategy):
         self._api_key = api_key or os.environ.get("OPENCODE_API_KEY", "")
         self._base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self._model = model or self.DEFAULT_MODEL
-        self._params = AiCompositeParams(model=self._model, min_confidence=0.6)
+        self._params = AiCompositeParams(model=self._model, min_confidence=0.2)
         self._pipeline = None
 
     def set_pipeline(self, pipeline):
@@ -94,7 +93,9 @@ class AICompositeStrategy(SignalStrategy):
         if p.model:
             self._model = p.model
 
-    async def evaluate(self, ctx: AnalysisContext) -> Optional[Signal]:
+    async def evaluate(self, ctx: AnalysisContext,
+                       ind_4h=None, ind_1d=None,
+                       bench_quotes: dict = None) -> Optional[Signal]:
         if not self._api_key:
             return None
 
@@ -102,13 +103,8 @@ class AICompositeStrategy(SignalStrategy):
         if ctx is None:
             return None
 
-        # 扩展数据
+        # 扩展数据已禁用（避免信号矛盾）
         extended = None
-        try:
-            from src.datasources.extended import fetch_extended_data
-            extended = await fetch_extended_data(ctx.symbol)
-        except Exception:
-            pass
 
         factors = None
         if self._pipeline:
@@ -133,7 +129,9 @@ class AICompositeStrategy(SignalStrategy):
 
         # Stage 2: Pro 决策
         prompt = self._build_dynamic_prompt(ctx, factors, news_digest, fund_digest,
-                                            extended=extended)
+                                            extended=extended,
+                                            ind_4h=ind_4h, ind_1d=ind_1d,
+                                            bench_quotes=bench_quotes)
         raw = await self._call_api(prompt)
         if not raw:
             return None
@@ -240,7 +238,9 @@ class AICompositeStrategy(SignalStrategy):
 
     def _build_dynamic_prompt(self, ctx: AnalysisContext, factors: dict,
                               news_digest: str = "", fund_digest: str = "",
-                              extended=None) -> str:
+                              extended=None,
+                              ind_4h=None, ind_1d=None,
+                              bench_quotes: dict = None) -> str:
         q = ctx.quote
         change_pct = q.change_pct * 100
         mom = factors
@@ -319,7 +319,7 @@ class AICompositeStrategy(SignalStrategy):
             ]
 
         prompt = (
-            f"你是一位美股量化交易分析师，擅长解读时序数据的变化趋势。\n"
+            f"你是一位美股量化交易员，不是分析师。你的职责是**交易**，不是观望。\n"
             f"分析 {ctx.symbol} 的以下多维动态数据，不仅看当前值，更要看**变化方向**。\n\n"
             f"## 📈 价格动量\n" + "\n".join(momentum_lines) + "\n\n"
             f"## 📊 技术指标轨迹\n"
@@ -338,20 +338,49 @@ class AICompositeStrategy(SignalStrategy):
             '    "action": "STRONG_BUY/BUY/HOLD/SELL/STRONG_SELL",\n'
             '    "reason": "中文理由（必须引用具体数据变化）",\n'
             '    "key_levels": {"support": x, "resistance": x},\n'
-            '    "risk_warning": "风险提示"\n'
-            "}\n\n"
-            "⚠️ 做空决策指南：做空比做多更依赖基本面恶化和负面新闻。\n"
-            "当基本面动量显示\"边际放缓\"或\"恶化\"、新闻情绪\"持续恶化\"时，\n"
-            "即使技术面尚未完全转向，也应优先考虑 SELL/STRONG_SELL。\n"
-            "营收增速连续下降+负面新闻扩散是做空的最强信号。\n"
+            '    "stop_loss": x, "take_profit": x,\n'
+            '    "risk_warning": "风险提示"\\n'
+            "}\\n\\n"
+            "🌍 市场背景：\\n"
         )
 
-        # 扩展数据（分析师/机构/财报）
-        if extended:
-            from src.datasources.extended import format_for_prompt
-            ext_text = format_for_prompt(extended)
-            if ext_text:
-                prompt += "\n" + ext_text + "\n"
+        # 大盘基准
+        if bench_quotes:
+            for name, bq in bench_quotes.items():
+                prompt += f"  {name} ${bq.mark_price:.2f} ({bq.change_pct*100:+.1f}%)\\n"
+
+        # OI + 费率
+        if q.open_interest > 0:
+            prompt += f"  持仓量: {q.open_interest:.0f} | 24h量: {q.volume_24h:.0f}\\n"
+        if hasattr(q, 'funding_rate') and q.funding_rate:
+            prompt += f"  资金费率: {q.funding_rate*100:.4f}% ('+'=多头付空头, '-'=空头付多头)\\n"
+        prompt += "\\n"
+
+        prompt += (
+            "📊 多周期趋势确认：\\n"
+        )
+
+        if ind_4h:
+            prompt += "  4H | MA10={:.1f} MA30={:.1f} RSI={:.0f} MACD={:.3f}\\n".format(
+                ind_4h.ma10, ind_4h.ma30, ind_4h.rsi14, ind_4h.macd)
+        if ind_1d:
+            prompt += "  日线| MA10={:.1f} MA30={:.1f} RSI={:.0f} MACD={:.3f}\\n".format(
+                ind_1d.ma10, ind_1d.ma30, ind_1d.rsi14, ind_1d.macd)
+        prompt += "  1H/4H/日线方向一致→高概率趋势 | 不一致→震荡\\n"
+
+        prompt += (
+            "\\n"
+            "⚡ 交易纪律（你必须遵守）：\\n"
+            "1. 趋势明朗时必须行动：accelerating_up → STRONG_BUY, accelerating_down → STRONG_SELL\n"
+            "2. HOLD 仅用于真正不确定的情况（震荡/矛盾信号），不要作为默认选项\n"
+            "3. strong trend (ADX>30) + 同向动量 → confidence 0.7-0.9，不要低于 0.6\n"
+            "4. 顺势做空不需要完美的基本面恶化，技术面趋势下行就足够\n"
+            "5. 宁可小亏止损，不可错过明确的趋势机会\n"
+            "6. 你的回答中 BUY/SELL 必须多于 HOLD，不要害怕交易\n"
+            "7. confidence 0.3-0.9：有明确趋势给 0.6+，不确定给 0.3-0.5，但必须给出方向\n"
+        )
+
+        # 扩展数据已禁用
 
         return prompt
 
@@ -449,20 +478,24 @@ class AICompositeStrategy(SignalStrategy):
 
         entry = ctx.quote.mark_price
         is_buy = action in ("BUY", "STRONG_BUY")
-        atr = ctx.indicators.atr14 or entry * 0.02
-        dynamic = calc_dynamic_levels(entry, atr, is_long=is_buy,
-                                      regime=ctx.market_regime)
 
-        key_levels = result.get("key_levels") or {}
-        support = key_levels.get("support", 0) if isinstance(key_levels, dict) else 0
-        resistance = key_levels.get("resistance", 0) if isinstance(key_levels, dict) else 0
+        # 只用 AI 给的 stop_loss/take_profit，不给就拒单
+        ai_sl = result.get("stop_loss", 0)
+        ai_tp = result.get("take_profit", 0)
+
+        if not ai_sl or not ai_tp:
+            logger.warning("AI 未提供 SL/TP: action=%s sl=%s tp=%s raw=%s",
+                          action, ai_sl, ai_tp, str(result)[:200])
+            return None
 
         if is_buy:
-            sl = support if (support and support < entry) else dynamic["stop_loss"]
-            tp = resistance if (resistance and resistance > entry) else dynamic["take_profit_1"]
+            if ai_sl >= entry or ai_tp <= entry:
+                logger.warning("AI SL/TP 方向错误 (BUY: SL=%s TP=%s)", ai_sl, ai_tp)
+                return None
         else:
-            sl = resistance if (resistance and resistance > entry) else dynamic["stop_loss"]
-            tp = support if (support and support < entry) else dynamic["take_profit_1"]
+            if ai_sl <= entry or ai_tp >= entry:
+                logger.warning("AI SL/TP 方向错误 (SELL: SL=%s TP=%s)", ai_sl, ai_tp)
+                return None
 
         return Signal(
             strategy_id=self.id, symbol=ctx.symbol,

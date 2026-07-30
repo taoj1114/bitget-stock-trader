@@ -48,7 +48,7 @@ from src.storage.fund_store import FundStore
 from src.storage.news_sentiment_store import NewsSentimentStore
 from src.features.pipeline import FeaturePipeline
 from src.optimization.population import ParamPopulation
-from src.core.types import AnalysisContext, Signal
+from src.core.types import AnalysisContext, Kline, Signal
 
 logger = logging.getLogger("autotrader")
 
@@ -64,6 +64,7 @@ FULL_SCAN_INTERVAL = 600     # 10 分钟全扫
 QUOTE_INTERVAL = 30          # 秒
 SYMBOL_REFRESH_INTERVAL = 14400
 TOP_N_SYMBOLS = 25
+BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]  # 大盘基准，不交易
 
 
 class AutoTrader:
@@ -83,10 +84,20 @@ class AutoTrader:
         # 因子管线
         self._pipeline = FeaturePipeline(self._kline_store, self._fund_store, self._news_store)
 
-        # 风控 + 滑点 + 执行器
+        # 风控 + 滑点 + 执行器 (paper 或 real)
         safety = SafetySystem(config.safety)
         slippage = SlippageModel()
-        self._executor = PaperExecutor(initial_capital=10000, safety=safety, slippage=slippage)
+        mode = config.mode
+        if mode == "real":
+            from src.trading.real_executor import RealExecutor
+            self._executor = RealExecutor()
+            if not self._executor.ready:
+                logger.warning("Bitget API 未配置，降级为纸盘")
+                self._executor = PaperExecutor(initial_capital=10000, safety=safety, slippage=slippage)
+                mode = "paper"
+        else:
+            self._executor = PaperExecutor(initial_capital=10000, safety=safety, slippage=slippage)
+        logger.info("执行器: %s", mode.upper())
 
         # 策略 — 规则策略用参数种群，AI 用单实例
         self._ai_strategy = AICompositeStrategy(api_key=config.deepseek.get("api_key", ""))
@@ -103,8 +114,6 @@ class AutoTrader:
             "price_action_support": ParamPopulation("price_action", population_size=2),
             "price_action_fakey": ParamPopulation("price_action", population_size=2),
         }
-        self._pop_perf: dict[str, list[dict]] = {k: [] for k in self._populations}
-
         # 进化计数器
         self._scan_count = 0
         self._evo_interval = 30
@@ -181,18 +190,62 @@ class AutoTrader:
         # 4. 宽松模式
         self._apply_loose_mode()
 
-        # 5. 逐品种分析
+        # 5. 第一遍：规则策略扫全品种，收集所有信号
+        all_rule_signals: list[tuple[str, Signal, dict]] = []  # (symbol, signal, params)
         for symbol in symbols_to_scan:
             price = quotes.get(symbol, 0)
             if price <= 0:
                 continue
-
             try:
-                used = await self._scan_symbol(symbol, price, quotes, ai_budget > 0)
-                if used:
-                    ai_budget -= 1
+                sigs = await self._scan_symbol_v2(symbol, price, quotes)
+                if sigs:
+                    all_rule_signals.extend((symbol, s, p) for s, p in sigs)
             except Exception as e:
                 logger.error("扫描 %s 失败: %s", symbol, e)
+
+        # 6. AI 管仓：每轮评估所有持仓是否需要调整
+        positions = await self._executor.get_positions()
+        if positions:
+            logger.info("AI 管仓: %d 个持仓", len(positions))
+            for pos in positions:
+                news = []
+                try:
+                    news = await self._news_registry.fetch_news(pos.symbol, max_results=5)
+                except Exception: pass
+                klines = await self._market.get_klines(pos.symbol, "1H", 100)
+                quote = await self._market.get_quote(pos.symbol)
+                if not quote or len(klines) < 30:
+                    continue
+                ind = self._tech.calculate(klines)
+                regime = self._regime_detector.detect(klines)
+                ctx = AnalysisContext(symbol=pos.symbol, quote=quote, klines=klines,
+                                      indicators=ind, fundamentals=None, news=news,
+                                      market_regime=regime)
+                try:
+                    ai_sig = await self._ai_strategy.evaluate(ctx)
+                    if ai_sig:
+                        # AI 建议平仓：多头看到 SELL → 平仓；空头看到 BUY → 平仓
+                        if (ai_sig.action in ("SELL","STRONG_SELL") and pos.side == "LONG") or \
+                           (ai_sig.action in ("BUY","STRONG_BUY") and pos.side == "SHORT"):
+                            logger.info("%s %s → AI 建议平仓", pos.symbol, pos.side)
+                            await self._executor.close_position(pos.id, "AI_CLOSE")
+                except Exception: pass
+
+        # 7. 有空位 → 按信号质量排序，全部送 AI 验证开新仓
+        all_rule_signals.sort(key=lambda x: x[1].confidence, reverse=True)
+        seen_symbols: set[str] = set()
+
+        for symbol, signal, params in all_rule_signals:
+            if symbol in seen_symbols:
+                continue
+            seen_symbols.add(symbol)
+            await self._validate_with_ai(symbol, signal, params)
+
+            # 进化检查
+            self._scan_count += 1
+            if self._scan_count >= self._evo_interval:
+                await self._evolve_populations()
+                self._scan_count = 0
 
         # 6. 保存状态
         self._executor._save_state()
@@ -201,9 +254,10 @@ class AutoTrader:
         # 7. 输出摘要
         positions = await self._executor.get_positions()
         balance = await self._executor.get_balance()
+        equity = await self._executor.get_equity()
         logger.info(
-            "扫描完成 | 持仓 %d | 余额 $%.0f | PnL $%.0f | 胜率 %d/%d",
-            len(positions), balance.current_balance, balance.total_pnl,
+            "扫描完成 | 持仓 %d | 净值 $%.0f (余额 $%.0f) | PnL $%.0f | 胜率 %d/%d",
+            len(positions), equity, balance.current_balance, balance.total_pnl,
             balance.win_count, balance.total_trades,
         )
 
@@ -315,117 +369,105 @@ class AutoTrader:
         if self._ai_strategy.params:
             self._ai_strategy.params.min_confidence = LOOSE_CONFIDENCE
 
-    async def _scan_symbol(self, symbol: str, price: float, quotes: dict,
-                           use_ai: bool = False) -> bool:
-        """规则策略先跑 → 有信号才调 AI 验证 → AI 确认后才执行。
-
-        旧流程: 规则 + AI 各自跑 → 聚合
-        新流程: 规则生成候选 → AI 验证确认/拒绝/调整 → 执行
-        """
+    async def _scan_symbol_v2(self, symbol: str, price: float, quotes: dict) -> list[tuple[Signal, dict]]:
+        """规则策略扫单品种（不执行，不调AI，只收集信号+参数）"""
         klines = await self._market.get_klines(symbol, "1H", 100)
         if len(klines) < 30:
-            return
+            return []
 
-        rows = [
-            {"timestamp": k.timestamp, "open": k.open, "high": k.high,
-             "low": k.low, "close": k.close, "volume": k.volume, "turnover": k.turnover}
-            for k in klines
-        ]
+        rows = [{"timestamp": k.timestamp, "open": k.open, "high": k.high,
+                 "low": k.low, "close": k.close, "volume": k.volume,
+                 "turnover": k.turnover} for k in klines]
         self._kline_store.upsert_batch(symbol, rows)
 
         quote = await self._market.get_quote(symbol)
         if not quote:
-            return
+            return []
 
         ind = self._tech.calculate(klines)
         regime = self._regime_detector.detect(klines)
+        ctx = AnalysisContext(symbol=symbol, quote=quote, klines=klines,
+                              indicators=ind, fundamentals=None, news=[],
+                              market_regime=regime)
 
-        # ── Step 1: 规则策略先跑（快速，无需新闻/AI）──
-        ctx = AnalysisContext(
-            symbol=symbol, quote=quote, klines=klines,
-            indicators=ind, fundamentals=None, news=[],
-            market_regime=regime,
-        )
-
-        rule_signals: list[Signal] = []
+        results: list[tuple[Signal, dict]] = []
         for sid, pop in self._populations.items():
-            best_sig = None
-            best_conf = 0
-            best_params = {}
+            best_sig, best_conf, best_params = None, 0, {}
             for params in pop.population:
                 strategy = pop.create_strategy(params)
-                if not strategy:
-                    continue
+                if not strategy: continue
                 try:
                     sig = await strategy.evaluate(ctx)
                     if sig and sig.confidence > best_conf:
-                        best_sig = sig
-                        best_conf = sig.confidence
-                        best_params = dict(params)
-                except Exception:
-                    continue
+                        best_sig, best_conf, best_params = sig, sig.confidence, dict(params)
+                except Exception: continue
             if best_sig:
-                best_sig.generating_params = best_params  # 记录参数
-                rule_signals.append(best_sig)
-                self._pop_perf[sid].append({"params": best_params, "signal": best_conf})
+                best_sig.generating_params = best_params
+                results.append((best_sig, best_params))
+        return results
 
-        if not rule_signals:
-            return False  # 无规则信号 → 跳过 AI
-
-        # ── Step 2: 有信号 → 拉新闻 + 调 AI 验证 ──
-        if not use_ai:
-            # 无 AI → 直接用规则信号
-            best = max(rule_signals, key=lambda s: s.confidence)
-            logger.info("%s: %s conf=%.2f (仅规则)", symbol, best.action, best.confidence)
-            exec_result = await self._executor.execute_signal(best)
-            if exec_result.status == "FILLED":
-                logger.info("  → 开仓: %s @ $%.2f qty=%.1f", best.action, exec_result.fill_price, exec_result.fill_quantity)
-            return False
-
-        # 拉新闻
+    async def _validate_with_ai(self, symbol: str, signal: Signal, params: dict) -> bool:
+        """AI 验证规则信号。含 1H/4H/1D 多周期分析。"""
         news_items = []
         try:
             news_items = await self._news_registry.fetch_news(symbol, max_results=10, merge_all=False)
-        except Exception:
-            pass
+        except Exception: pass
 
-        # 构造 AI 验证上下文（含规则信号）
-        best_rule = max(rule_signals, key=lambda s: s.confidence)
-        ctx_with_news = AnalysisContext(
-            symbol=symbol, quote=quote, klines=klines,
-            indicators=ind, fundamentals=None, news=news_items,
-            market_regime=regime,
-        )
+        klines_1h = await self._market.get_klines(symbol, "1H", 500)  # 500根1H ≈ 21天
+        quote = await self._market.get_quote(symbol)
+        if not quote or len(klines_1h) < 30:
+            return False
 
-        # AI 验证
+        # 大盘背景（不交易，仅作参考）
+        bench_quotes = {}
+        for bs in BENCHMARK_SYMBOLS:
+            try:
+                bq = await self._market.get_quote(bs)
+                if bq and bq.mark_price > 0:
+                    bench_quotes[bs] = bq
+            except Exception:
+                pass
+
+        ind_1h = self._tech.calculate(klines_1h)
+        regime = self._regime_detector.detect(klines_1h)
+
+        # 多周期聚合（dict → Kline 转换）
+        from src.storage.kline_aggregator import KlineAggregator
+        agg = KlineAggregator()
+        raw_4h = agg.aggregate(klines_1h, "4H")
+        raw_1d = agg.aggregate(klines_1h, "1D")
+        klines_4h = [Kline(**r) for r in raw_4h] if raw_4h else []
+        klines_1d = [Kline(**r) for r in raw_1d] if raw_1d else []
+        ind_4h = self._tech.calculate(klines_4h) if len(klines_4h) >= 5 else None
+        ind_1d = self._tech.calculate(klines_1d) if len(klines_1d) >= 3 else None
+
+        ctx = AnalysisContext(symbol=symbol, quote=quote, klines=klines_1h,
+                              indicators=ind_1h, fundamentals=None, news=news_items,
+                              market_regime=regime)
+
         try:
-            ai_sig = await self._ai_strategy.evaluate(ctx_with_news)
+            ai_sig = await self._ai_strategy.evaluate(ctx, ind_4h=ind_4h, ind_1d=ind_1d,
+                                                     bench_quotes=bench_quotes)
+            logger.info("AI 返回: %s → %s(%.2f) %s",
+                       symbol,
+                       ai_sig.action if ai_sig else "HOLD",
+                       ai_sig.confidence if ai_sig else 0,
+                       (ai_sig.reason[:60] + "...") if (ai_sig and ai_sig.reason) else "")
         except Exception:
             ai_sig = None
 
-        # ── Step 3: AI 确认/调整 → 执行 ──
         if ai_sig:
             logger.info("%s: 规则=%s(%.2f) → AI=%s(%.2f)", symbol,
-                       best_rule.action, best_rule.confidence,
+                       signal.action, signal.confidence,
                        ai_sig.action, ai_sig.confidence)
-            exec_result = await self._executor.execute_signal(ai_sig)
+            result = await self._executor.execute_signal(ai_sig)
+            if result.status == "FILLED":
+                logger.info("  → 开仓: %s @ $%.2f qty=%.1f",
+                           ai_sig.action, result.fill_price, result.fill_quantity)
+            return True
         else:
-            logger.info("%s: 规则=%s(%.2f) → AI 否决", symbol,
-                       best_rule.action, best_rule.confidence)
-            return True  # AI 被调用了（否决也是用了）
-
-        if exec_result.status == "FILLED":
-            logger.info("  → 开仓: %s @ $%.2f qty=%.1f", ai_sig.action, exec_result.fill_price, exec_result.fill_quantity)
-        else:
-            logger.info("  → 被拦截: %s", exec_result.reason)
-
-        # ── 进化检查 ──
-        self._scan_count += 1
-        if self._scan_count >= self._evo_interval:
-            await self._evolve_populations()
-            self._scan_count = 0
-
-        return True  # AI 被调用了
+            logger.info("%s: 规则=%s(%.2f) → AI 否决", symbol, signal.action, signal.confidence)
+            return True
 
     async def _evolve_populations(self):
         """触发种群进化：从真实交易数据计算每参数组的绩效 → AI 建议 → 下一代。"""

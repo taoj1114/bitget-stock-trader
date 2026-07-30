@@ -144,10 +144,11 @@ class PaperExecutor(Executor):
         if quantity < min_qty:
             return OrderResult(status="REJECTED", reason=f"Quantity {quantity} < min {min_qty}")
 
-        # 保证金检查
+        # 保证金检查（含浮亏）
         position_value = quantity * fill_price
         margin_required = position_value / leverage
-        available = self._balance.current_balance - self._balance.used_margin
+        equity = self._equity()
+        available = equity - self._balance.used_margin
         if margin_required > available:
             return OrderResult(status="REJECTED",
                              reason=f"保证金不足: 需要${margin_required:.0f} 可用${available:.0f}")
@@ -272,6 +273,16 @@ class PaperExecutor(Executor):
     async def get_balance(self) -> AccountBalance:
         return self._balance
 
+    async def get_equity(self) -> float:
+        """净值 = 余额 + 所有持仓浮盈浮亏。"""
+        unrealized = sum(p.unrealized_pnl for p in self._positions.values())
+        return self._balance.current_balance + unrealized
+
+    def _equity(self) -> float:
+        """同步版净值（内部用）。"""
+        unrealized = sum(p.unrealized_pnl for p in self._positions.values())
+        return self._balance.current_balance + unrealized
+
     # ═══ 止盈止损 + 未实现盈亏 ══════════════════
 
     async def tick(self, quotes: dict[str, float]) -> list[OrderResult]:
@@ -315,6 +326,18 @@ class PaperExecutor(Executor):
             result = await self.close_position(pid, reason)
             results.append(result)
 
+        # ── 爆仓检测 ──
+        equity = self._equity()
+        if self._balance.used_margin > 0:
+            margin_ratio = equity / self._balance.used_margin
+            if margin_ratio < 0.5:  # 维持保证金率 50%
+                logger.warning("⚠️ 爆仓警告: 净值/保证金=%.0f%%", margin_ratio * 100)
+                # 强制平掉亏损最大的仓位
+                worst = max(self._positions.values(),
+                           key=lambda p: abs(p.unrealized_pnl))
+                result = await self.close_position(worst.id, "LIQUIDATION")
+                results.append(result)
+
         return results
 
     # ═══ 动态仓位 ═══════════════════════════════
@@ -322,20 +345,19 @@ class PaperExecutor(Executor):
     def _calc_quantity(self, signal: Signal, fill_price: float,
                        leverage: int, qty_precision: int,
                        min_qty: float) -> float:
-        """合约动态仓位。
+        """全仓模式动态仓位。
 
-        核心公式：quantity = (balance × risk%) / (entry × stop_pct)
-        杠杆只影响所需保证金，不放大仓位。
+        核心公式：quantity = (equity × risk%) / (entry × stop_pct)
+        浮盈可加仓，AI 止盈止损控制风险。
 
         约束：
-            - margin_required ≤ available_balance × 50%（总敞口限制）
-            - 按 qty_precision 取整
+            - margin_required ≤ available × 80%（总敞口限制，AI保障安全）
         """
-        balance = self._balance.current_balance
-        if balance <= 0:
+        equity = self._equity()
+        if equity <= 0:
             return min_qty
 
-        risk_pct = 0.02  # 每笔最多亏 2%
+        risk_pct = 0.02  # 每笔最多亏 2% 净值
 
         if signal.stop_loss > 0 and signal.entry_price > 0:
             stop_pct = abs(signal.entry_price - signal.stop_loss) / signal.entry_price
@@ -343,13 +365,13 @@ class PaperExecutor(Executor):
         else:
             stop_pct = 0.05
 
-        # 基于风险计算基准仓位
-        risk_amount = balance * risk_pct
+        # 基于净值风险计算基准仓位
+        risk_amount = equity * risk_pct
         raw_qty = risk_amount / (fill_price * stop_pct)
 
-        # 保证金约束：不超过可用余额 50%
-        available = balance - self._balance.used_margin
-        max_by_margin = (available * 0.5 * leverage) / fill_price
+        # 保证金约束：不超过可用余额 80%（全仓模式）
+        available = equity - self._balance.used_margin
+        max_by_margin = (available * 0.8 * leverage) / fill_price if available > 0 else 0
 
         quantity = min(raw_qty, max_by_margin)
 
@@ -364,6 +386,7 @@ class PaperExecutor(Executor):
         os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
         state = {
             "current_balance": self._balance.current_balance,
+            "equity": self._equity(),
             "total_pnl": self._balance.total_pnl,
             "total_trades": self._balance.total_trades,
             "win_count": self._balance.win_count,
