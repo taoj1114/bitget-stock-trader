@@ -34,11 +34,11 @@ class AICompositeStrategy(SignalStrategy):
     _NAME = "AI 综合决策"
 
     DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
-    DEFAULT_MODEL = "deepseek-v4-pro"
+    DEFAULT_MODEL = "deepseek-v4-pro"  # Pro 更慎重
     FLASH_MODEL = "deepseek-v4-flash"
     TEMPERATURE = 0.3
     FLASH_TEMPERATURE = 0.1
-    MAX_TOKENS = 1000
+    MAX_TOKENS = 2000  # 增加，防止 JSON 截断
     FLASH_MAX_TOKENS = 300
     REQUEST_TIMEOUT = 30.0
     FLASH_TIMEOUT = 15.0
@@ -371,13 +371,10 @@ class AICompositeStrategy(SignalStrategy):
         prompt += (
             "\\n"
             "⚡ 交易纪律（你必须遵守）：\\n"
-            "1. 趋势明朗时必须行动：accelerating_up → STRONG_BUY, accelerating_down → STRONG_SELL\n"
-            "2. HOLD 仅用于真正不确定的情况（震荡/矛盾信号），不要作为默认选项\n"
-            "3. strong trend (ADX>30) + 同向动量 → confidence 0.7-0.9，不要低于 0.6\n"
-            "4. 顺势做空不需要完美的基本面恶化，技术面趋势下行就足够\n"
-            "5. 宁可小亏止损，不可错过明确的趋势机会\n"
-            "6. 你的回答中 BUY/SELL 必须多于 HOLD，不要害怕交易\n"
-            "7. confidence 0.3-0.9：有明确趋势给 0.6+，不确定给 0.3-0.5，但必须给出方向\n"
+            "1. 趋势明朗时才行动，震荡/矛盾信号可以 HOLD\\n"
+            "2. HOLD 是合法的——市场不是每天都有机会\\n"
+            "3. 做多条件：趋势向上+价格合理+无重大利空\\n"
+            "4. 做空条件：趋势向下+反弹到位+基本面配合\\n"
         )
 
         # 扩展数据已禁用
@@ -416,14 +413,41 @@ class AICompositeStrategy(SignalStrategy):
                                       timeout=self.REQUEST_TIMEOUT,
                                       json_mode=True)
 
+    @staticmethod
+    def _fix_truncated_json(raw: str) -> str:
+        """补全被截断的 JSON。"""
+        raw = raw.strip()
+        # 计算未闭合的括号
+        open_braces = raw.count("{") - raw.count("}")
+        open_brackets = raw.count("[") - raw.count("]")
+        # 去除最后一个不完整的字段
+        if "," in raw[-20:]:
+            raw = raw.rstrip().rstrip(",")
+        # 补全引号和括号
+        if raw and raw[-1] not in ('}', ']', '"'):
+            raw += '"'
+        raw += "}" * open_braces + "]" * open_brackets
+        return raw
+
     def _parse_response(self, raw: str) -> Optional[dict]:
         if not raw:
             return None
+
+        # 先试标准解析
         try:
             return json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             pass
-        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+
+        # 截断修复：补全缺失的括号
+        fixed = self._fix_truncated_json(raw)
+        try:
+            return json.loads(fixed)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # fenced code block
+        fenced = re.search(r"```(?:json)?\\s*(\\{.*?\\})\\s*```", raw, re.DOTALL)
         if fenced:
             try:
                 return json.loads(fenced.group(1))
@@ -500,7 +524,7 @@ class AICompositeStrategy(SignalStrategy):
         return Signal(
             strategy_id=self.id, symbol=ctx.symbol,
             action=action, confidence=confidence,
-            entry_price=entry, stop_loss=sl,
-            take_profits=[tp],
+            entry_price=entry, stop_loss=ai_sl,
+            take_profits=[ai_tp],
             reason=result.get("reason", "")[:500],
         )

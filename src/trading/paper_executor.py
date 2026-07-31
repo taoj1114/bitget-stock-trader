@@ -101,6 +101,11 @@ class PaperExecutor(Executor):
         """执行合约交易信号。"""
         positions = list(self._positions.values())
 
+        # 同品种去重
+        existing = [p for p in positions if p.symbol == signal.symbol]
+        if existing:
+            return OrderResult(status="REJECTED", reason=f"{signal.symbol}已有仓位")
+
         # 安全检查
         verdict = self._safety.check_hard_limits(signal, positions, self._balance)
         if not verdict.passed:

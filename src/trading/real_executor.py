@@ -20,6 +20,7 @@ class RealExecutor:
         self._trader = BitgetTrader(credentials)
         self._ready = self._trader.ready
         self._positions: dict[str, Position] = {}  # position_id → Position (内存缓存)
+        self._equity = 10000  # 兜底（会在 execute_signal 时更新）
 
     @property
     def ready(self) -> bool:
@@ -32,10 +33,29 @@ class RealExecutor:
             return OrderResult(status="REJECTED", reason="Bitget API 未配置")
 
         side = "buy" if signal.action in ("BUY", "STRONG_BUY") else "sell"
+
+        # 实盘：查账户可用保证金
+        try:
+            acct = await self._trader.get_account()
+            self._equity = acct.available  # 可用 = 净值 - 已用保证金
+        except Exception:
+            pass
+
         quantity = self._calc_quantity_sync(signal)
 
         if quantity <= 0:
             return OrderResult(status="REJECTED", reason="仓位为0")
+
+        # 最低订单量检查 ($5)
+        notional = quantity * signal.entry_price
+        if notional < 5:
+            return OrderResult(status="REJECTED", reason=f"订单价值 ${notional:.2f} < 最低 $5")
+
+        # 仓位上限 (Bitget 保证金自然限制)
+        max_pos = 5
+        if len(self._positions) >= max_pos:
+            return OrderResult(status="REJECTED",
+                             reason=f"持仓已达上限 ({len(self._positions)}/{max_pos})")
 
         try:
             resp = await self._trader.place_order(
@@ -143,12 +163,41 @@ class RealExecutor:
     # ═══ 辅助 ═══════════════════════════════════
 
     def _calc_quantity_sync(self, signal: Signal) -> float:
-        """合约仓位（同步版）。"""
-        return max(0.01, round(signal.confidence * 10, 2))
+        """合约仓位 — 小账户均分保证金。"""
+        equity = self._get_equity_sync()
+        if equity <= 0:
+            return 0.01
+
+        leverage = self._calc_leverage(signal)
+
+        # 小账户 (≤$20): 保证金均分给剩余仓位
+        if equity <= 20:
+            existing_count = len(self._positions)
+            remaining_slots = max(1, 5 - existing_count)
+            margin_per_position = equity * 0.95 / remaining_slots
+            qty = (margin_per_position * leverage) / signal.entry_price
+            return max(0.01, qty)
+
+        # 大账户 (>$20): 2% 风险
+        risk_pct = 0.02
+        if signal.stop_loss > 0 and signal.entry_price > 0:
+            stop_pct = abs(signal.entry_price - signal.stop_loss) / signal.entry_price
+            stop_pct = max(stop_pct, 0.01)
+        else:
+            stop_pct = 0.05
+
+        raw_qty = (equity * risk_pct) / (signal.entry_price * stop_pct)
+        max_by_margin = (equity * 0.8 * leverage) / signal.entry_price if equity > 0 else 0
+        return max(0.01, min(raw_qty, max_by_margin))
+
+    def _get_equity_sync(self) -> float:
+        """同步获取净值（实盘：通过 execute_signal 时 API 更新）。"""
+        return self._equity
 
     def _calc_leverage(self, signal: Signal) -> int:
-        return 5  # 实盘保守 5x
-
+        """杠杆分档：≤$20 → 20x, >$20 → 5x。"""
+        equity = self._get_equity_sync()
+        return 20 if equity <= 20 else 5
     async def tick(self, quotes: dict[str, float]) -> list[OrderResult]:
         """实盘 tick：同步交易所持仓 + 检查止盈止损。"""
         if not self._ready:

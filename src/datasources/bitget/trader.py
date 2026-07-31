@@ -139,7 +139,7 @@ class BitgetTrader:
         if trade_side == "open":
             body["leverage"] = str(leverage)
 
-        return await self._request("POST", "/api/v3/mix/order/place-order", body)
+        return await self._request("POST", "/api/v2/mix/order/place-order", body)
 
     async def close_position(self, symbol: str, side: str = "") -> dict:
         """市价平仓。side 为空则平所有。"""
@@ -150,7 +150,7 @@ class BitgetTrader:
         }
         if side:
             body["holdSide"] = side  # long / short
-        return await self._request("POST", "/api/v3/mix/order/close-position", body)
+        return await self._request("POST", "/api/v2/mix/order/close-position", body)
 
     # ═══ 止盈止损 ═══════════════════════════════
 
@@ -174,7 +174,7 @@ class BitgetTrader:
             "planType": stop_type,  # loss_plan / profit_plan
             "triggerType": "mark_price",
         }
-        return await self._request("POST", "/api/v3/mix/order/place-stop-order", body)
+        return await self._request("POST", "/api/v2/mix/order/place-stop-order", body)
 
     # ═══ 查询 ═══════════════════════════════════
 
@@ -184,12 +184,8 @@ class BitgetTrader:
         if symbol:
             params["symbol"] = f"{symbol}USDT"
 
-        path = "/api/v3/mix/position/single-position" if symbol else "/api/v3/mix/position/all-position"
-        if symbol:
-            path += "?" + "&".join(f"{k}={v}" for k, v in params.items())
-            result = await self._request("GET", path)
-        else:
-            result = await self._request("GET", path)
+        path = "/api/v2/mix/position/all-position?productType=USDT-FUTURES&marginCoin=USDT"
+        result = await self._request("GET", path)
 
         data = result.get("data", [])
         if isinstance(data, dict):
@@ -213,11 +209,12 @@ class BitgetTrader:
 
     async def get_account(self) -> RealAccount:
         """查询账户。"""
-        params = {"productType": "USDT-FUTURES", "marginCoin": "USDT"}
-        path = "/api/v3/mix/account/account"
+        path = "/api/v2/mix/account/accounts?productType=USDT-FUTURES&marginCoin=USDT"
         result = await self._request("GET", path)
 
-        data = result.get("data", {})
+        data = result.get("data", [])
+        if isinstance(data, list) and data:
+            data = data[0]  # 取第一个账户
         return RealAccount(
             equity=float(data.get("accountEquity", 0)),
             available=float(data.get("available", 0)),
