@@ -23,7 +23,7 @@ from src.storage.fund_store import FundStore
 from src.storage.news_sentiment_store import NewsSentimentStore
 from src.features.pipeline import FeaturePipeline
 from src.core.types import Kline
-from src.strategies.ai_native import AINativeDecisionMaker, AIInput
+from src.strategies.ai_native import AINativeDecisionMaker, AIInput, get_us_session
 
 logger = logging.getLogger("autotrader")
 
@@ -62,6 +62,10 @@ class AutoTrader:
         logger.info("执行器: %s", mode.upper())
 
         self._ai_decider = AINativeDecisionMaker()
+        from src.strategies.ai_memory import AIMemory
+        self._memory = AIMemory()
+        self._lessons = self._memory.get_lessons(5)
+        self._last_review = 0.0  # 复盘计时
         self._tech = TechnicalAnalyzer()
         self._regime_detector = MarketRegimeDetector()
 
@@ -134,6 +138,11 @@ class AutoTrader:
                     k_1d = [Kline(**r) for r in agg.aggregate(k_1h, "1D")]
                     ind4 = self._tech.calculate(k_4h) if len(k_4h)>=5 else None
                     ind1d = self._tech.calculate(k_1d) if len(k_1d)>=3 else None
+                    news_items = []
+                    try:
+                        news_items = await self._news_registry.fetch_news(pos.symbol, max_results=5)
+                    except Exception: pass
+                    news_titles = [item.title for item in news_items[:5]]
                     ai_inp = AIInput(
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                         klines_1h=k_1h, klines_4h=k_4h, klines_1d=k_1d,
@@ -142,8 +151,11 @@ class AutoTrader:
                                    regime=reg.regime, bb_position=0.5),
                         ind_4h=dict(rsi=ind4.rsi14) if ind4 else None,
                         ind_1d=dict(rsi=ind1d.rsi14) if ind1d else None,
-                        news=[], news_summary="", bench={},
-                        open_interest=0, funding_rate=0, volume_24h=0)
+                        news=news_titles, news_summary="; ".join(news_titles[:3]),
+                        bench=bench, open_interest=q.open_interest,
+                        funding_rate=getattr(q, 'funding_rate', 0) or 0,
+                        volume_24h=q.volume_24h,
+                        session=get_us_session())
                     sig = await self._ai_decider.decide(ai_inp)
                     if not sig:
                         continue
@@ -151,7 +163,12 @@ class AutoTrader:
                     if (sig.action in ("SELL","STRONG_SELL") and pos.side=="LONG") or \
                        (sig.action in ("BUY","STRONG_BUY") and pos.side=="SHORT"):
                         logger.info("%s %s → AI 平仓", pos.symbol, pos.side)
-                        await self._executor.close_position(pos.id, "AI_CLOSE")
+                        result = await self._executor.close_position(pos.id, "AI_CLOSE")
+                        # 回填决策结果 (实盘从交易所查净值变化, 简化用 getattr)
+                        try:
+                            pnl = getattr(result, "pnl", 0) or 0
+                            self._memory.close_decision(pos.symbol, q.mark_price, pnl)
+                        except Exception: pass
                     # 方向一致 → 更新止盈止损
                     elif (sig.action in ("BUY","STRONG_BUY") and pos.side=="LONG") or \
                          (sig.action in ("SELL","STRONG_SELL") and pos.side=="SHORT"):
@@ -160,9 +177,9 @@ class AutoTrader:
                             tpsl = "sell" if hold == "long" else "buy"
                             try:
                                 await self._executor._trader.place_stop_order(
-                                    pos.symbol, hold, tpsl, sig.stop_loss, pos.quantity, "loss_plan")
+                                    pos.symbol, hold, tpsl, sig.stop_loss, pos.quantity, "pos_loss")
                                 await self._executor._trader.place_stop_order(
-                                    pos.symbol, hold, tpsl, sig.take_profits[0], pos.quantity, "profit_plan")
+                                    pos.symbol, hold, tpsl, sig.take_profits[0], pos.quantity, "pos_profit")
                                 logger.info("%s SL→$%.2f TP→$%.2f", pos.symbol, sig.stop_loss, sig.take_profits[0])
                             except Exception as e:
                                 logger.warning("SL/TP更新失败 %s: %s", pos.symbol, e)
@@ -207,16 +224,24 @@ class AutoTrader:
                     bench=bench, open_interest=q.open_interest,
                     funding_rate=getattr(q, 'funding_rate', 0) or 0,
                     volume_24h=q.volume_24h,
-                )
+                    session=get_us_session(),
+                    lessons=self._lessons)
                 sig = await self._ai_decider.decide(ai_inp)
                 if sig:
-                    logger.info("%s: 规则通过 → Pro=%s SL=$%.2f TP=$%.2f",
+                    logger.info("%s: AI=%s SL=$%.2f TP=$%.2f",
                                symbol, sig.action, sig.stop_loss, sig.take_profits[0])
                     result = await self._executor.execute_signal(sig)
                     if result.status == "FILLED":
                         logger.info("  → 开仓: qty=%.1f", result.fill_quantity)
+                    self._memory.log_decision(
+                        symbol, sig.action, sig.reason, get_us_session(),
+                        q.mark_price, ind_1h.rsi14, regime.adx, regime.regime,
+                        entry=q.mark_price)
                 else:
-                    logger.info("%s: 规则=HOLD", symbol)
+                    logger.info("%s: AI=HOLD", symbol)
+                    self._memory.log_decision(
+                        symbol, "HOLD", "AI判断无机会", get_us_session(),
+                        q.mark_price, ind_1h.rsi14, regime.adx, regime.regime)
             except Exception as e:
                 logger.error("AI扫描 %s 失败: %s", symbol, e)
 
@@ -227,6 +252,18 @@ class AutoTrader:
         equity = await self._executor.get_equity()
         logger.info("扫描完成 | 持仓 %d | 净值 $%.0f (余额 $%.0f) | PnL $%.0f",
                    len(positions), equity, balance.current_balance, balance.total_pnl)
+
+        # ── AI 自我复盘 (每12小时) ──
+        if time.time() - self._last_review >= 12 * 3600:
+            try:
+                lessons = await self._ai_decider.review_and_learn(self._memory)
+                if lessons:
+                    self._memory.set_lessons(lessons)
+                    self._lessons = lessons
+                    self._last_review = time.time()
+                    logger.info("AI 已自我更新 %d 条经验", len(lessons))
+            except Exception as e:
+                logger.warning("AI 复盘失败: %s", e)
 
     async def run_live(self, interval: int = QUOTE_INTERVAL):
         logger.info("AutoTrader 启动 | 间隔 %ds | 品种 %d", interval, len(self._symbols))
@@ -277,18 +314,39 @@ class AutoTrader:
         return sorted(symbols, key=lambda s: scores.get(s, 0), reverse=True)
 
     async def _refresh_symbols(self):
+        """从全市场美股合约动态刷新品种池（按热度取前25）。"""
         try:
+            contracts = await self._symbol_source.get_stock_symbols()
+            if len(contracts) < 10:
+                logger.warning("全市场合约不足 (%d)，保持原池", len(contracts))
+                return
+
+            # 批量拉行情，按成交量+涨跌排序
             rich = {}
-            for sym in self._symbols[:20]:
+            for c in contracts[:80]:  # 全市场美股合约
                 try:
-                    q = await self._market.get_quote(sym)
-                    if q:
-                        rich[sym] = {"volume_24h": q.volume_24h, "change_pct": abs(q.change_pct), "turnover_24h": q.turnover_24h}
+                    q = await self._market.get_quote(c.symbol)
+                    if q and q.mark_price > 0 and (q.volume_24h or 0) > 0:
+                        rich[c.symbol] = {
+                            "volume_24h": q.volume_24h,
+                            "change_pct": abs(q.change_pct),
+                            "turnover_24h": q.turnover_24h,
+                        }
                 except Exception: pass
-            if len(rich) >= 5:
-                self._symbols = self._rank_symbols(list(rich.keys()), rich)
+
+            if len(rich) >= 15:
+                ranked = self._rank_symbols(list(rich.keys()), rich)
+                new_pool = ranked[:TOP_N_SYMBOLS]
+                # 保留现有持仓品种（避免池子刷新把持仓踢掉）
+                positions = await self._executor.get_positions()
+                held = {p.symbol for p in positions}
+                for h in held:
+                    if h not in new_pool:
+                        new_pool.append(h)
+                self._symbols = new_pool
+                logger.info("品种池动态刷新: %d 个 (来自全市场 %d)", len(new_pool), len(rich))
         except Exception as e:
-            logger.error("刷新热度排名失败: %s", e)
+            logger.error("刷新品种池失败: %s", e)
 
     def _filter_by_price_change(self, quotes):
         triggered = []

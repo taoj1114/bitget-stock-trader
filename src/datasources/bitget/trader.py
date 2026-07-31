@@ -161,7 +161,7 @@ class BitgetTrader:
         tpsl_side: str,     # buy / sell (平仓方向)
         trigger_price: float,
         quantity: float,
-        plan_type: str = "loss_plan",  # loss_plan / profit_plan
+        plan_type: str = "pos_loss",  # pos_loss / pos_profit
     ) -> dict:
         """下止盈止损单。"""
         body = {

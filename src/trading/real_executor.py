@@ -76,7 +76,8 @@ class RealExecutor:
 
         if resp.get("code") == "00000":
             logger.info("✅ 真实开仓: %s %s qty=%.1f", signal.symbol, side, quantity)
-            pos_id = resp.get("data", {}).get("orderId", f"real_{signal.symbol}")
+            order_id = resp.get("data", {}).get("orderId", "")
+            pos_id = f"real_{signal.symbol}"  # 统一 id = real_{symbol}
 
             # 设置止盈止损
             hold_side = "long" if side == "buy" else "short"
@@ -85,7 +86,7 @@ class RealExecutor:
                 try:
                     sl_resp = await self._trader.place_stop_order(
                         signal.symbol, hold_side, sl_tpsl,
-                        signal.stop_loss, quantity, "loss_plan")
+                        signal.stop_loss, quantity, "pos_loss")
                     if sl_resp.get("code") == "00000":
                         logger.info("  ✅ 止损: %s @ $%.2f", signal.symbol, signal.stop_loss)
                     else:
@@ -97,7 +98,7 @@ class RealExecutor:
                 try:
                     tp_resp = await self._trader.place_stop_order(
                         signal.symbol, hold_side, tp_tpsl,
-                        signal.take_profits[0], quantity, "profit_plan")
+                        signal.take_profits[0], quantity, "pos_profit")
                     if tp_resp.get("code") == "00000":
                         logger.info("  ✅ 止盈: %s @ $%.2f", signal.symbol, signal.take_profits[0])
                     else:
@@ -153,7 +154,11 @@ class RealExecutor:
             return list(self._positions.values())
 
         result = []
+        seen_ids = set()
         for p in real_positions:
+            pid = f"real_{p.symbol}"
+            seen_ids.add(pid)
+            prev = self._positions.get(pid)
             pos = Position(
                 id=f"real_{p.symbol}",
                 symbol=p.symbol,
@@ -161,13 +166,17 @@ class RealExecutor:
                 quantity=p.quantity,
                 entry_price=p.entry_price,
                 mark_price=p.mark_price,
-                stop_loss=0,
-                take_profit_levels=[],
+                stop_loss=prev.stop_loss if prev else 0,  # 保留本地 SL/TP
+                take_profit_levels=prev.take_profit_levels if prev else [],
                 unrealized_pnl=p.unrealized_pnl,
                 leverage=p.leverage,
             )
             result.append(pos)
             self._positions[pos.id] = pos  # 同步内存缓存
+        # 清理已平仓的残留缓存
+        for stale_id in list(self._positions.keys()):
+            if stale_id not in seen_ids:
+                del self._positions[stale_id]
         return result
 
     async def get_balance(self) -> AccountBalance:

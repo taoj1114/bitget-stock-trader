@@ -5,6 +5,7 @@
 """
 
 import asyncio, json, logging, os, re
+from datetime import datetime, date
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -13,6 +14,32 @@ import httpx
 from src.core.types import Signal
 
 logger = logging.getLogger(__name__)
+
+
+def get_us_session(now=None) -> str:
+    """判断当前美股交易时段（美东标准时间，自动处理夏令时）。
+
+    美股标准交易时间 (America/New_York, ET):
+      pre_market  盘前  04:00 - 09:30
+      regular     盘中  09:30 - 16:00  ← 正常交易
+      post_market 盘后  16:00 - 20:00
+      closed      深夜  20:00 - 04:00
+      weekend     周末  休市
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    now = now or datetime.now(timezone.utc)
+    et = now.astimezone(ZoneInfo("America/New_York"))
+    if et.weekday() >= 5:
+        return "weekend"
+    t = et.hour * 60 + et.minute
+    if 9 * 60 + 30 <= t < 16 * 60:
+        return "regular"
+    if 4 * 60 <= t < 9 * 60 + 30:
+        return "pre_market"
+    if 16 * 60 <= t < 20 * 60:
+        return "post_market"
+    return "closed"
 
 @dataclass
 class AIInput:
@@ -30,7 +57,9 @@ class AIInput:
     bench: dict
     open_interest: float
     funding_rate: float
-    volume_24h: float
+    volume_24h: float = 0.0
+    session: str = "regular"  # pre_market / regular / post_market / weekend / holiday
+    lessons: list[str] = field(default_factory=list)  # 复盘经验
 
 
 class AINativeDecisionMaker:
@@ -38,8 +67,8 @@ class AINativeDecisionMaker:
 
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
-        self._api_key = os.environ.get("OPENCODE_API_KEY", "")
-        self._base_url = "https://opencode.ai/zen/go/v1"
+        self._api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        self._base_url = "https://api.deepseek.com"
 
     async def _call(self, system: str, prompt: str, model: str,
                     temp: float, max_tokens: int, json_mode: bool = False) -> str:
@@ -77,44 +106,14 @@ class AINativeDecisionMaker:
         return ""
 
     async def decide(self, inp: AIInput) -> Optional[Signal]:
-        """两层决策：规则初筛 → Pro 深度分析。"""
-        # Layer 1: 规则快速过滤（不调 API）
-        rsi1h = inp.ind_1h.get('rsi', 50)
-        regime = inp.ind_1h.get('regime', '')
-        adx = inp.ind_1h.get('adx', 0)
-        ma10 = inp.ind_1h.get('ma10', 0)
-        ma30 = inp.ind_1h.get('ma30', 0)
-        rsi4h = inp.ind_4h.get('rsi', 50) if inp.ind_4h else 50
-        rsi1d = inp.ind_1d.get('rsi', 50) if inp.ind_1d else 50
-
-        direction = None
-
-        # 趋势做多条件
-        if regime in ('trend_up', 'weak_trend') and adx > 25:
-            if 40 <= rsi1h <= 75 and rsi4h < 80 and rsi1d < 80 and ma10 > ma30:
-                direction = "BUY"
-
-        # 趋势做空条件
-        if regime in ('trend_down',) and adx > 25:
-            if 25 <= rsi1h <= 65 and rsi4h > 20 and rsi1d > 20 and ma10 < ma30:
-                direction = "SELL"
-
-        # 超卖反弹
-        if rsi1h < 35 and rsi4h < 40:
-            direction = "BUY"
-
-        # 超买回落
-        if rsi1h > 75 and rsi4h > 65:
-            direction = "SELL"
-
-        if not direction:
-            return None  # 规则过滤
-
-        # Layer 2: Pro 深度分析 + SL/TP
-        pro = await self._pro_deep_analyze(inp, flash_direction=direction)
+        """纯 AI 决策：Pro 直接分析全部数据。"""
+        pro = await self._pro_deep_analyze(inp, flash_direction="AI")
         if not pro:
             return None
-        return self._to_signal(inp, pro)
+        pro_action = pro.get("action", "HOLD")
+        if pro_action == "HOLD":
+            return None
+        return self._to_signal(inp, pro, pro_action)
 
     # ═══ Flash ═══════════════════════
 
@@ -142,9 +141,14 @@ class AINativeDecisionMaker:
     async def _pro_deep_analyze(self, inp: AIInput, flash_direction: str) -> Optional[dict]:
         """Pro 深度分析，定 SL/TP。"""
         bench_str = " ".join(f"{k}{v:+.1f}%" for k, v in inp.bench.items())
+        lessons = inp.lessons or []
+        lesson_str = ""
+        if lessons:
+            lesson_str = "\n历史经验(复盘总结):\n" + "\n".join(f"  • {l}" for l in lessons) + "\n"
 
         prompt = (
-            f"Flash判断 {inp.symbol} 方向为{flash_direction}。你确认并定价位。\n"
+            f"分析 {inp.symbol}，给出交易决策。\n"
+            f"时段: {inp.session}\n"
             f"${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n\n"
             f"1H RSI={inp.ind_1h.get('rsi',50):.0f} MA10={inp.ind_1h.get('ma10',0):.1f} MA30={inp.ind_1h.get('ma30',0):.1f} "
             f"MACD={inp.ind_1h.get('macd',0):.3f} ATR={inp.ind_1h.get('atr',0):.2f} "
@@ -153,21 +157,70 @@ class AINativeDecisionMaker:
             + (f"1D RSI={inp.ind_1d.get('rsi',0):.0f} MA10={inp.ind_1d.get('ma10',0):.1f} MA30={inp.ind_1d.get('ma30',0):.1f}\n" if inp.ind_1d else "")
             + f"大盘 {bench_str}\n"
             f"OI={inp.open_interest:.0f} 费率={inp.funding_rate*100:.4f}%\n"
-            f"新闻 {inp.news_summary or '无'}\n\n"
-            "输出JSON:\n"
+            f"新闻 {inp.news_summary or '无'}\n"
+            + lesson_str
+            + "\n输出JSON:\n"
             '{"action":"BUY/SELL/HOLD","stop_loss":x,"take_profit":x,"reason":"..."}\n'
-            "HOLD是合法的。不确定就HOLD。"
+            "HOLD是合法的。不确定就HOLD。\n"
+            "时段策略: regular(盘中)正常交易; pre_market盘前/post_market盘后/closed深夜流动性差,"
+            "除非信号极强否则HOLD; weekend周末休市必HOLD。"
         )
         raw = await self._call(
             system="你是美股交易分析师。输出JSON，不要思考，直接给结果。",
-            prompt=prompt, model="deepseek-v4-pro",
+            prompt=prompt, model="deepseek-v4-flash",
             temp=0.3, max_tokens=4000, json_mode=False,
         )
         return self._parse_json(raw)
 
+    # ═══ 自我复盘 ═══════════════════════
+
+    async def review_and_learn(self, memory) -> list[str]:
+        """AI 读历史决策+结果，输出经验教训。"""
+        decisions = memory.recent_decisions(30)
+        if len(decisions) < 5:
+            return []
+        stats = memory.stats()
+        lines = []
+        for d in decisions[-15:]:
+            lines.append(
+                f"{d['time'][:16]} {d['symbol']} {d['action']} "
+                f"RSI={d['rsi_1h']} ADX={d['adx']} {d['regime']} "
+                f"[{d['session']}] → {d['outcome'] or 'open'} pnl={d['close_pnl']} | {d['reason'][:60]}")
+        stats_str = (
+            f"总{stats['total']} 胜{stats['win']} 负{stats['loss']} "
+            f"平{stats['flat']}\n"
+            f"按时段: {json.dumps(stats['by_session'], ensure_ascii=False)}\n"
+            f"按regime: {json.dumps(stats['by_regime'], ensure_ascii=False)}\n"
+            f"按方向: {json.dumps(stats['by_action'], ensure_ascii=False)}"
+        )
+        prompt = (
+            "你是交易系统复盘员。以下是最近交易决策与结果：\n\n"
+            + "\n".join(lines) + "\n\n"
+            + "统计:\n" + stats_str + "\n\n"
+            "总结 3-5 条可执行的经验教训，用于改进未来决策。规则：\n"
+            "1. 只写可操作的（如'RSI>70时追多易亏'、'盘后开仓胜率低'、'ADX<20震荡期应HOLD'）\n"
+            "2. 每条 ≤60 字，中文\n"
+            "3. 输出JSON数组，如 [\"经验1\", \"经验2\"]"
+        )
+        raw = await self._call(
+            system="你是交易复盘员，只输出JSON数组。",
+            prompt=prompt, model="deepseek-v4-flash",
+            temp=0.3, max_tokens=2000, json_mode=False,
+        )
+        parsed = self._parse_json(raw)
+        if isinstance(parsed, list):
+            lessons = [str(x)[:80] for x in parsed][:6]
+            if lessons:
+                logger.info("AI 复盘: %d 条经验", len(lessons))
+                for l in lessons:
+                    logger.info("  • %s", l)
+                return lessons
+        logger.warning("复盘解析失败: %s", str(raw)[:100])
+        return []
+
     # ═══ 辅助 ═══════════════════════
 
-    def _to_signal(self, inp: AIInput, result: dict) -> Optional[Signal]:
+    def _to_signal(self, inp: AIInput, result: dict, direction: str) -> Optional[Signal]:
         action = result.get("action", "HOLD")
         if action == "HOLD":
             return None
