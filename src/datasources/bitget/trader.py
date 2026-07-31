@@ -157,24 +157,26 @@ class BitgetTrader:
     async def place_stop_order(
         self,
         symbol: str,
-        side: str,           # buy / sell
+        hold_side: str,     # long / short (持仓方向)
+        tpsl_side: str,     # buy / sell (平仓方向)
         trigger_price: float,
         quantity: float,
-        stop_type: str = "loss",  # loss / profit
+        plan_type: str = "loss_plan",  # loss_plan / profit_plan
     ) -> dict:
         """下止盈止损单。"""
         body = {
             "symbol": f"{symbol}USDT",
             "productType": "USDT-FUTURES",
             "marginCoin": "USDT",
-            "side": side,
+            "holdSide": hold_side,
+            "side": tpsl_side,
             "size": str(quantity),
             "triggerPrice": str(trigger_price),
             "orderType": "market",
-            "planType": stop_type,  # loss_plan / profit_plan
+            "planType": plan_type,
             "triggerType": "mark_price",
         }
-        return await self._request("POST", "/api/v2/mix/order/place-stop-order", body)
+        return await self._request("POST", "/api/v2/mix/order/place-tpsl-order", body)
 
     # ═══ 查询 ═══════════════════════════════════
 

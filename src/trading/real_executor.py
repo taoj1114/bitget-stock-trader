@@ -34,6 +34,12 @@ class RealExecutor:
 
         side = "buy" if signal.action in ("BUY", "STRONG_BUY") else "sell"
 
+        # 硬校验：必须要有止盈止损
+        if signal.stop_loss <= 0 or signal.stop_loss is None:
+            return OrderResult(status="REJECTED", reason="缺止损价位")
+        if not signal.take_profits or signal.take_profits[0] <= 0:
+            return OrderResult(status="REJECTED", reason="缺止盈价位")
+
         # 实盘：查账户可用保证金
         try:
             acct = await self._trader.get_account()
@@ -71,11 +77,40 @@ class RealExecutor:
         if resp.get("code") == "00000":
             logger.info("✅ 真实开仓: %s %s qty=%.1f", signal.symbol, side, quantity)
             pos_id = resp.get("data", {}).get("orderId", f"real_{signal.symbol}")
+
+            # 设置止盈止损
+            hold_side = "long" if side == "buy" else "short"
+            if signal.stop_loss > 0:
+                sl_tpsl = "sell" if side == "buy" else "buy"
+                try:
+                    sl_resp = await self._trader.place_stop_order(
+                        signal.symbol, hold_side, sl_tpsl,
+                        signal.stop_loss, quantity, "loss_plan")
+                    if sl_resp.get("code") == "00000":
+                        logger.info("  ✅ 止损: %s @ $%.2f", signal.symbol, signal.stop_loss)
+                    else:
+                        logger.warning("  ⚠️ 止损失败: %s", sl_resp.get("msg",""))
+                except Exception as e:
+                    logger.warning("  ⚠️ 止损异常: %s", e)
+            if signal.take_profits and signal.take_profits[0] > 0:
+                tp_tpsl = "sell" if side == "buy" else "buy"
+                try:
+                    tp_resp = await self._trader.place_stop_order(
+                        signal.symbol, hold_side, tp_tpsl,
+                        signal.take_profits[0], quantity, "profit_plan")
+                    if tp_resp.get("code") == "00000":
+                        logger.info("  ✅ 止盈: %s @ $%.2f", signal.symbol, signal.take_profits[0])
+                    else:
+                        logger.warning("  ⚠️ 止盈失败: %s", tp_resp.get("msg",""))
+                except Exception as e:
+                    logger.warning("  ⚠️ 止盈异常: %s", e)
+
             self._positions[pos_id] = Position(
                 id=pos_id, symbol=signal.symbol,
                 side="LONG" if side == "buy" else "SHORT",
                 quantity=quantity,
                 entry_price=signal.entry_price,
+                mark_price=signal.entry_price,  # 初始 mark = entry
                 stop_loss=signal.stop_loss,
                 take_profit_levels=[],
             )
@@ -143,6 +178,7 @@ class RealExecutor:
         except Exception:
             return AccountBalance(current_balance=0)
         return AccountBalance(
+            initial_capital=acct.equity,  # 实盘：当前净值为基准
             current_balance=acct.equity - acct.unrealized_pnl,
             total_pnl=acct.unrealized_pnl,
             used_margin=acct.used_margin,
@@ -170,11 +206,9 @@ class RealExecutor:
 
         leverage = self._calc_leverage(signal)
 
-        # 小账户 (≤$20): 保证金均分给剩余仓位
+        # 小账户 (≤$20): 总资金/5，每仓等分
         if equity <= 20:
-            existing_count = len(self._positions)
-            remaining_slots = max(1, 5 - existing_count)
-            margin_per_position = equity * 0.95 / remaining_slots
+            margin_per_position = equity * 0.95 / 5
             qty = (margin_per_position * leverage) / signal.entry_price
             return max(0.01, qty)
 
@@ -195,18 +229,32 @@ class RealExecutor:
         return self._equity
 
     def _calc_leverage(self, signal: Signal) -> int:
-        """杠杆分档：≤$20 → 20x, >$20 → 5x。"""
+        """杠杆分档：≤$20 → 10x, >$20 → 5x。"""
         equity = self._get_equity_sync()
-        return 20 if equity <= 20 else 5
+        return 10 if equity <= 20 else 5
     async def tick(self, quotes: dict[str, float]) -> list[OrderResult]:
-        """实盘 tick：同步交易所持仓 + 检查止盈止损。"""
+        """实盘 tick：同步持仓 + 本地 SL/TP 备份检查。"""
+        results = []
         if not self._ready:
-            return []
+            return results
+        # 同步 Bitget 实际持仓
         try:
-            await self.get_positions()  # 同步缓存
+            await self.get_positions()
         except Exception:
             pass
-        return []  # 止盈止损在交易所托管
+        # 本地 SL/TP 备份检查
+        for pos in self._positions.values():
+            price = quotes.get(pos.symbol, 0)
+            if not price:
+                continue
+            if pos.stop_loss > 0:
+                if pos.side == "LONG" and price <= pos.stop_loss:
+                    r = await self.close_position(pos.id, "LOCAL_STOP_LOSS")
+                    results.append(r)
+                elif pos.side == "SHORT" and price >= pos.stop_loss:
+                    r = await self.close_position(pos.id, "LOCAL_STOP_LOSS")
+                    results.append(r)
+        return results
 
     def _save_state(self):
         """实盘无需本地状态（存储在交易所）。"""

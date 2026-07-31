@@ -178,18 +178,9 @@ class AINativeDecisionMaker:
         entry = inp.mark_price
         is_buy = action in ("BUY", "STRONG_BUY")
 
-        # 止损距离限制：最大 5%
-        max_sl_pct = 0.05
-        if is_buy:
-            min_sl = entry * (1 - max_sl_pct)
-            sl = max(float(sl), min_sl)
-        else:
-            max_sl = entry * (1 + max_sl_pct)
-            sl = min(float(sl), max_sl)
-
-        if is_buy and (sl >= entry or tp <= entry):
+        if is_buy and (float(sl) >= entry or float(tp) <= entry):
             return None
-        if not is_buy and (sl <= entry or tp >= entry):
+        if not is_buy and (float(sl) <= entry or float(tp) >= entry):
             return None
         return Signal(
             strategy_id="ai_native", symbol=inp.symbol,
