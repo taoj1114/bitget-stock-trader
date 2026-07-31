@@ -128,7 +128,7 @@ async def api_live():
             "symbol": p["symbol"], "side": p["side"],
             "qty": p["quantity"], "entry": entry, "mark": mark,
             "pnl": round(pnl, 1),
-            "opened": (p.get("opened_at", "")[:16] or "-"),
+            "opened": ((p.get("opened_at") or "")[:16] or "-"),
             "lev": p.get("leverage", 5),
         })
 

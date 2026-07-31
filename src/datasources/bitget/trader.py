@@ -201,9 +201,9 @@ class BitgetTrader:
                 symbol=p.get("symbol", "").replace("USDT", ""),
                 side=p.get("holdSide", ""),
                 quantity=float(p.get("total", 0)),
-                entry_price=float(p.get("averageOpenPrice", 0)),
+                entry_price=float(p.get("openPriceAvg", 0)),  # 均价
                 mark_price=float(p.get("markPrice", 0)),
-                margin=float(p.get("margin", 0)),
+                margin=float(p.get("marginSize", 0)),
                 unrealized_pnl=float(p.get("unrealizedPL", 0)),
                 leverage=int(float(p.get("leverage", 5))),
             ))

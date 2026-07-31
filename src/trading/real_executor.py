@@ -3,7 +3,7 @@
 接口与 PaperExecutor 一致，可在配置中切换 paper/real 模式。
 """
 
-import logging
+import logging, os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -257,5 +257,23 @@ class RealExecutor:
         return results
 
     def _save_state(self):
-        """实盘无需本地状态（存储在交易所）。"""
-        pass
+        """写本地状态供仪表盘读取。"""
+        import json
+        state = {
+            "equity": self._equity,
+            "current_balance": self._equity,
+            "total_pnl": 0,
+            "used_margin": 0,
+            "positions": [
+                {
+                    "symbol": p.symbol, "side": p.side, "quantity": p.quantity,
+                    "entry_price": p.entry_price, "mark_price": p.mark_price,
+                    "stop_loss": p.stop_loss, "opened_at": str(p.opened_at) if p.opened_at else None,
+                    "leverage": getattr(p, 'leverage', 10), "unrealized_pnl": p.unrealized_pnl,
+                }
+                for p in self._positions.values()
+            ],
+        }
+        path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "trader_state.json")
+        with open(path, "w") as f:
+            json.dump(state, f, default=str)
