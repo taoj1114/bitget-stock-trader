@@ -166,11 +166,14 @@ class AutoTrader:
                                      bb_position=_bb_pos(i15, q.mark_price),
                                      volume_ratio=i15.volume_ratio,
                                      vwap=i15.vwap)
+                    # 管仓: 仅异常波动注入新闻
                     news_items = []
-                    try:
-                        news_items = await self._news_registry.fetch_news(pos.symbol, max_results=5)
-                    except Exception: pass
-                    news_titles = [item.title for item in news_items[:5]]
+                    news_titles = []
+                    if abs(q.change_pct * 100) >= 5.0:
+                        try:
+                            news_items = await self._news_registry.fetch_news(pos.symbol, max_results=5)
+                        except Exception: pass
+                        news_titles = [item.title for item in news_items[:5]]
                     ai_inp = AIInput(
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                         klines_1h=k_1h, klines_4h=k_4h, klines_1d=k_1d,
@@ -251,10 +254,17 @@ class AutoTrader:
                                        volume_ratio=i15.volume_ratio,
                                        vwap=i15.vwap)
 
+                # 新闻降级: 仅异常波动(±5%)时注入, 否则空 (避免噪声)
                 news_items = []
-                try: news_items = await self._news_registry.fetch_news(symbol, max_results=5)
-                except: pass
-                news_titles = [item.title for item in news_items[:5]]
+                news_titles = []
+                if abs(q.change_pct * 100) >= 5.0:
+                    try:
+                        news_items = await self._news_registry.fetch_news(symbol, max_results=5)
+                    except Exception: pass
+                    news_titles = [item.title for item in news_items[:5]]
+                if news_titles:
+                    logger.info("%s 异常波动 %+.1f%% → 注入新闻 %d 条",
+                               symbol, q.change_pct * 100, len(news_titles))
 
                 ai_inp = AIInput(
                     symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
@@ -287,7 +297,10 @@ class AutoTrader:
                         entry=q.mark_price)
                 else:
                     logger.info("%s: AI=HOLD", symbol)
-                    # HOLD 不记日志 (避免噪音淹没真实信号)
+                    # 记录 HOLD (保证复盘有数据; 统计时只算有结果的)
+                    self._memory.log_decision(
+                        symbol, "HOLD", "AI判断无机会", get_us_session(),
+                        q.mark_price, ind_1h.rsi14, regime.adx, regime.regime)
             except Exception as e:
                 logger.error("AI扫描 %s 失败: %s", symbol, e)
 
@@ -299,14 +312,14 @@ class AutoTrader:
         logger.info("扫描完成 | 持仓 %d | 净值 $%.0f (余额 $%.0f) | PnL $%.0f",
                    len(positions), equity, balance.current_balance, balance.total_pnl)
 
-        # ── AI 自我复盘 (每12小时) ──
+        # ── AI 自我复盘 (每12小时, 无条件更新计时器) ──
         if time.time() - self._last_review >= 12 * 3600:
+            self._last_review = time.time()  # 先更新, 防止每轮空跑
             try:
                 lessons = await self._ai_decider.review_and_learn(self._memory)
                 if lessons:
                     self._memory.set_lessons(lessons)
                     self._lessons = lessons
-                    self._last_review = time.time()
                     logger.info("AI 已自我更新 %d 条经验", len(lessons))
             except Exception as e:
                 logger.warning("AI 复盘失败: %s", e)

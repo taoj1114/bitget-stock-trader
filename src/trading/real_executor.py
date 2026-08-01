@@ -22,7 +22,7 @@ class RealExecutor:
         self._positions: dict[str, Position] = {}  # position_id → Position (内存缓存)
         self._equity = 10000  # 兜底（会在 execute_signal 时更新）
         from src.trading.tracker import Tracker
-        self._tracker = Tracker()
+        self._tracker = Tracker(mode="real")
 
     @property
     def ready(self) -> bool:

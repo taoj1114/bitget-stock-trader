@@ -12,9 +12,10 @@ from typing import Optional
 class Tracker:
     """交易记录 SQLite 存储。线程安全（写操作加锁）。"""
 
-    def __init__(self, db_path: str = "data/trades.db"):
+    def __init__(self, db_path: str = "data/trades.db", mode: str = "paper"):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._lock = threading.Lock()
+        self._mode = mode
         self._create_table()
 
     def _create_table(self):
@@ -36,7 +37,8 @@ class Tracker:
                 holding_hours REAL DEFAULT 0.0,
                 market_regime TEXT DEFAULT '',
                 signal_score REAL DEFAULT 0.0,
-                position_id  TEXT DEFAULT ''
+                position_id  TEXT DEFAULT '',
+                mode        TEXT DEFAULT 'paper'
             )
         """)
         self._conn.execute("""
@@ -55,15 +57,15 @@ class Tracker:
             self._conn.execute("""
                 INSERT INTO trades
                 (timestamp, symbol, side, type, price, quantity, reason,
-                 strategy_id, spread, position_id, signal_score, market_regime)
-                VALUES (?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?)
+                 strategy_id, spread, position_id, signal_score, market_regime, mode)
+                VALUES (?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 datetime.now(timezone.utc).isoformat(),
                 position.symbol, position.side,
                 position.entry_price, position.quantity,
                 signal.reason, signal.strategy_id, spread,
                 position.id, signal.confidence or 0,
-                '',
+                '', self._mode,
             ))
             self._conn.commit()
 
@@ -88,8 +90,8 @@ class Tracker:
             self._conn.execute("""
                 INSERT INTO trades
                 (timestamp, symbol, side, type, price, quantity, pnl, pnl_pct,
-                 reason, strategy_id, funding_cost, holding_hours, position_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 reason, strategy_id, funding_cost, holding_hours, position_id, mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 datetime.now(timezone.utc).isoformat(),
                 position.symbol, position.side,
@@ -97,7 +99,7 @@ class Tracker:
                 round(pnl, 2), round(pnl_pct, 2),
                 reason, strategy_id or position.strategy_id,
                 funding_cost, round(holding_hours, 2),
-                position.id,
+                position.id, self._mode,
             ))
             self._conn.commit()
 

@@ -187,7 +187,9 @@ class AINativeDecisionMaker:
             return []
         stats = memory.stats()
         lines = []
-        for d in decisions[-15:]:
+        # 只显示有结果的决策 (win/loss/flat), 排除纯 HOLD 噪音
+        decided = [d for d in decisions if d.get("outcome") is not None]
+        for d in (decided or decisions)[-15:]:
             lines.append(
                 f"{d['time'][:16]} {d['symbol']} {d['action']} "
                 f"RSI={d['rsi_1h']} ADX={d['adx']} {d['regime']} "
