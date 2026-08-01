@@ -129,6 +129,15 @@ class Config:
         return self.get("deepseek", {})
 
     @property
+    def opencode(self) -> dict:
+        return self.get("opencode", {})
+
+    def ai_provider_cfg(self) -> dict:
+        """当前启用的 AI 供应商配置 (含模型/base_url/api_key)。"""
+        provider = self.get("ai_provider", "deepseek")
+        return self.get(provider, {})
+
+    @property
     def cache(self) -> dict:
         return self.get("cache", {})
 

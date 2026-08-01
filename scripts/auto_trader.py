@@ -86,12 +86,19 @@ class AutoTrader:
             self._executor = PaperExecutor(initial_capital=10000, safety=safety, slippage=slippage)
         logger.info("执行器: %s", mode.upper())
 
-        # AI 决策器: 模型从 config.yaml deepseek 段读取 (可自选模型)
-        ds_cfg = getattr(config, "deepseek", {}) or {}
+        # AI 决策器: 从 config.yaml ai_provider 段读取 (可自选供应商/模型)
+        ds_cfg = config.ai_provider_cfg()
+        provider = config.get("ai_provider", "deepseek")
+        # API key 优先级: 配置值 > 供应商专属环境变量 > DEEPSEEK_API_KEY
+        import os as _os
+        api_key = ds_cfg.get("api_key", "") or _os.environ.get(
+            f"{provider.upper()}_API_KEY", "") or _os.environ.get("DEEPSEEK_API_KEY", "")
         self._ai_decider = AINativeDecisionMaker(
             model=ds_cfg.get("model", "deepseek-v4-flash"),
             base_url=ds_cfg.get("base_url", "https://api.deepseek.com"),
+            api_key=api_key,
         )
+        logger.info("AI 供应商: %s | 模型: %s", provider, self._ai_decider._model)
         from src.strategies.ai_memory import AIMemory
         self._memory = AIMemory()
         self._lessons = self._memory.get_lessons(5)
