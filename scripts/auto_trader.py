@@ -249,8 +249,8 @@ class AutoTrader:
                         new_tp = sig.take_profits[0] if sig.take_profits else 0
                         if new_sl <= 0 or new_tp <= 0:
                             continue
-                        sl_changed = cur_sl <= 0 or abs(new_sl - cur_sl) / max(cur_sl, 1e-9) > 0.005
-                        tp_changed = cur_tp <= 0 or abs(new_tp - cur_tp) / max(cur_tp, 1e-9) > 0.005
+                        sl_changed = cur_sl <= 0 or abs(new_sl - cur_sl) / max(cur_sl, 1e-9) > 0.002
+                        tp_changed = cur_tp <= 0 or abs(new_tp - cur_tp) / max(cur_tp, 1e-9) > 0.002
                         if not sl_changed and not tp_changed:
                             continue  # 无实质变化, 不重挂
                         hold = "long" if pos.side == "LONG" else "short"

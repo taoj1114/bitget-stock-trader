@@ -110,8 +110,8 @@ class AINativeDecisionMaker:
         return ""
 
     async def decide(self, inp: AIInput) -> Optional[Signal]:
-        """纯 AI 决策：Pro 直接分析全部数据。"""
-        pro = await self._pro_deep_analyze(inp, flash_direction="AI")
+        """纯 AI 决策：直接分析全部数据。"""
+        pro = await self._pro_deep_analyze(inp)
         if not pro:
             return None
         pro_action = pro.get("action", "HOLD")
@@ -119,31 +119,10 @@ class AINativeDecisionMaker:
             return None
         return self._to_signal(inp, pro, pro_action)
 
-    # ═══ Flash ═══════════════════════
+    # ═══ 开仓决策 ═══════════════════════
 
-    async def _flash_assess(self, inp: AIInput) -> Optional[dict]:
-        """Flash 快速判断方向。"""
-        bench_str = " ".join(f"{k}{v:+.1f}%" for k, v in inp.bench.items())
-        prompt = (
-            f"{inp.symbol} ${inp.mark_price:.2f} RSI={inp.ind_1h.get('rsi',50):.0f} "
-            f"ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')} "
-            f"大盘{bench_str} "
-            f"→ BUY SELL HOLD?"
-        )
-        raw = await self._call(
-            system="仅回复 BUY SELL 或 HOLD。",
-            prompt=prompt, model="deepseek-v4-flash",
-            temp=0.0, max_tokens=500, json_mode=False,
-        )
-        raw = raw.strip().upper()
-        if raw in ("BUY", "SELL", "HOLD"):
-            return {"action": raw}
-        return self._parse_json(raw) if "{" in raw else None
-
-    # ═══ Pro ═══════════════════════
-
-    async def _pro_deep_analyze(self, inp: AIInput, flash_direction: str) -> Optional[dict]:
-        """Pro 深度分析，定 SL/TP。"""
+    async def _pro_deep_analyze(self, inp: AIInput) -> Optional[dict]:
+        """AI 深度分析，定方向 + SL/TP。"""
         bench_str = " ".join(f"{k}{v:+.1f}%" for k, v in inp.bench.items())
         lessons = inp.lessons or []
         lesson_str = ""
@@ -151,6 +130,9 @@ class AINativeDecisionMaker:
             lesson_str = "\n历史经验(复盘总结):\n" + "\n".join(f"  • {l}" for l in lessons) + "\n"
 
         rules = inp.rules or []
+        # 去重: 与 lessons 重叠的硬规则剔除
+        if lessons:
+            rules = [r for r in rules if not any(r[:10] in l or l[:10] in r for l in lessons)]
         rules_str = ""
         if rules:
             rules_str = "\n⛔ 硬规则(必须遵守):\n" + "\n".join(f"  ⛔ {r}" for r in rules) + "\n"
@@ -173,11 +155,6 @@ class AINativeDecisionMaker:
             f"分析 {inp.symbol}，给出交易决策。\n"
             f"时段: {inp.session}\n"
             f"${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n"
-            + (f"持仓: {inp.position_ctx.get('side','')} 开仓价=${inp.position_ctx.get('entry',0):.2f} "
-               f"持仓{inp.position_ctx.get('hours',0):.0f}小时 浮盈=${inp.position_ctx.get('pnl',0):.2f} "
-               f"当前SL=${inp.position_ctx.get('sl',0):.2f} TP=${inp.position_ctx.get('tp',0):.2f}\n"
-               if inp.position_ctx else "")
-            + "\n"
             + (f"15m RSI={inp.ind_15m.get('rsi',50):.0f} MA10={inp.ind_15m.get('ma10',0):.2f} MA30={inp.ind_15m.get('ma30',0):.2f} "
                f"MACD={inp.ind_15m.get('macd',0):.4f} ATR={inp.ind_15m.get('atr',0):.2f} "
                f"ADX={inp.ind_15m.get('adx',0):.0f} {inp.ind_15m.get('regime','')} "
@@ -225,7 +202,7 @@ class AINativeDecisionMaker:
         ctx = inp.position_ctx or {}
         bench_str = " ".join(f"{k}{v:+.1f}%" for k, v in inp.bench.items())
 
-        # 品种历史 (管仓记忆, 仅看已平仓结果避免锚定)
+        # 品种历史 (管仓记忆, 仅看已平仓结果 + 防锚定)
         hist_str = ""
         if inp.history:
             decided = [h for h in inp.history if h.get("outcome") is not None][-3:]
@@ -233,11 +210,14 @@ class AINativeDecisionMaker:
                 lines = [f"  {h.get('time','')[:16]} {h.get('action','?')} → {h.get('outcome','')} "
                          f"pnl={h.get('close_pnl')} SL%={h.get('sl_pct')} | {h.get('reason','')[:40]}"
                          for h in decided]
-                hist_str = "\n该股历史交易结果:\n" + "\n".join(lines) + "\n"
+                hist_str = "\n该股历史交易结果(仅供参考, 勿固执):\n" + "\n".join(lines) + "\n"
 
         prompt = (
             f"你是日内交易持仓管理AI。管理 {inp.symbol} 的持仓, 目标是日内最大获利 + 最小回撤。\n"
-            f"时段: {inp.session} | ${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n\n"
+            f"时段: {inp.session} | ${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n"
+            + ("[周末/深夜闭市: 流动性极差, 仅保守检查, 不做大调整]\n"
+               if inp.session in ("weekend", "closed") else "")
+            + f"\n"
             f"持仓: {ctx.get('side','?')} 开仓价=${ctx.get('entry',0):.2f} "
             f"持仓{ctx.get('hours',0):.0f}小时 浮盈=${ctx.get('pnl',0):.2f}\n"
             f"当前SL=${ctx.get('sl',0):.2f} 当前TP=${ctx.get('tp',0):.2f}\n\n"
@@ -249,6 +229,7 @@ class AINativeDecisionMaker:
             + (f"4H RSI={inp.ind_4h.get('rsi',0):.0f}\n" if inp.ind_4h else "")
             + (f"1D RSI={inp.ind_1d.get('rsi',0):.0f}\n" if inp.ind_1d else "")
             + f"大盘 {bench_str}\n"
+            + f"新闻 {inp.news_summary or '无'}\n"
             + hist_str
             + "\n日内持仓管理原则:\n"
             "1. 移动止损: 盈利后止损随价格移动锁利(保本→1R→更高), 不要死守开仓时的止损\n"
@@ -368,6 +349,8 @@ class AINativeDecisionMaker:
         if isinstance(parsed, dict):
             lessons = [str(x)[:80] for x in parsed.get("lessons", [])][:6]
             rules = [str(x)[:60] for x in parsed.get("rules", [])][:4]
+            # 去重: rules 若与 lessons 内容重叠则剔除
+            rules = [r for r in rules if not any(r[:10] in l or l[:10] in r for l in lessons)]
             if lessons:
                 logger.info("AI 复盘: %d 条经验, %d 条硬规则", len(lessons), len(rules))
                 for l in lessons:
