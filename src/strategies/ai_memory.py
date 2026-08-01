@@ -19,6 +19,7 @@ MEMORY_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "data", "ai_me
 
 MAX_DECISIONS = 500   # 保留最近决策
 MAX_LESSONS = 20      # 经验条数上限
+MAX_RULES = 10        # 硬规则上限
 
 
 def _now() -> str:
@@ -26,7 +27,7 @@ def _now() -> str:
 
 
 class AIMemory:
-    """AI 决策记忆 + 经验。"""
+    """AI 决策记忆 + 经验 + 硬规则。"""
 
     def __init__(self, path: str = MEMORY_PATH):
         self._path = path
@@ -38,10 +39,11 @@ class AIMemory:
                 d = json.load(f)
             d.setdefault("decisions", [])
             d.setdefault("lessons", [])
+            d.setdefault("rules", [])
             d.setdefault("last_review", "")
             return d
         except Exception:
-            return {"decisions": [], "lessons": [], "last_review": ""}
+            return {"decisions": [], "lessons": [], "rules": [], "last_review": ""}
 
     def _save(self) -> None:
         try:
@@ -54,15 +56,25 @@ class AIMemory:
 
     def log_decision(self, symbol: str, action: str, reason: str,
                      session: str, mark_price: float, rsi_1h: float,
-                     adx: float, regime: str, entry: float = 0.0) -> None:
+                     adx: float, regime: str, entry: float = 0.0,
+                     sl_price: float = 0.0, tp_price: float = 0.0) -> None:
         """记录一次 AI 决策（开仓或 HOLD）。"""
+        sl_pct = None
+        tp_pct = None
+        if entry > 0:
+            if sl_price > 0:
+                sl_pct = round(abs(sl_price - entry) / entry * 100, 1)
+            if tp_price > 0:
+                tp_pct = round(abs(tp_price - entry) / entry * 100, 1)
         d = {
             "time": _now(), "symbol": symbol, "action": action,
             "reason": reason[:300], "session": session,
             "mark_price": round(mark_price, 2),
             "rsi_1h": round(rsi_1h, 1), "adx": round(adx, 1),
             "regime": regime, "entry": round(entry, 2),
+            "sl_pct": sl_pct, "tp_pct": tp_pct,
             "close_pnl": None, "close_price": None, "outcome": None,
+            "close_reason": None, "holding_hours": None,
         }
         self._data["decisions"].append(d)
         # 限制数量
@@ -70,14 +82,27 @@ class AIMemory:
             self._data["decisions"] = self._data["decisions"][-MAX_DECISIONS:]
         self._save()
 
-    def close_decision(self, symbol: str, close_price: float, pnl: float) -> None:
+    def close_decision(self, symbol: str, close_price: float, pnl: float,
+                       close_reason: str = "", holding_hours: float = 0) -> None:
         """平仓时回填最近一次未平仓决策的结果。"""
         for d in reversed(self._data["decisions"]):
             if d["symbol"] == symbol and d["close_pnl"] is None:
                 d["close_pnl"] = round(pnl, 2)
                 d["close_price"] = round(close_price, 2)
                 d["outcome"] = "win" if pnl > 0 else ("loss" if pnl < 0 else "flat")
+                d["close_reason"] = close_reason
+                d["holding_hours"] = round(holding_hours, 1)
                 break
+        self._save()
+
+    # ═══ 硬规则 (失败模式) ═════════════════
+
+    def get_rules(self, limit: int = 10) -> list[str]:
+        """取硬规则, 注入 prompt (带'禁止'强约束)。"""
+        return self._data["rules"][-limit:]
+
+    def set_rules(self, rules: list[str]) -> None:
+        self._data["rules"] = rules[-MAX_RULES:]
         self._save()
 
     # ═══ 经验 ═══════════════════════════════

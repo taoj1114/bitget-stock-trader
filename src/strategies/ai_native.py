@@ -61,7 +61,9 @@ class AIInput:
     ind_15m: dict | None = None  # 日内主指标
     session: str = "regular"  # pre_market / regular / post_market / weekend / holiday
     lessons: list[str] = field(default_factory=list)  # 复盘经验
+    rules: list[str] = field(default_factory=list)    # 硬规则 (禁止项)
     history: list[dict] = field(default_factory=list)  # 品种记忆: 该股近期AI判断
+    position_ctx: dict | None = None  # 持仓上下文 (管仓时)
 
 
 class AINativeDecisionMaker:
@@ -148,23 +150,34 @@ class AINativeDecisionMaker:
         if lessons:
             lesson_str = "\n历史经验(复盘总结):\n" + "\n".join(f"  • {l}" for l in lessons) + "\n"
 
-        # 品种记忆: 该股近期 AI 判断
+        rules = inp.rules or []
+        rules_str = ""
+        if rules:
+            rules_str = "\n⛔ 硬规则(必须遵守):\n" + "\n".join(f"  ⛔ {r}" for r in rules) + "\n"
+
+        # 品种记忆: 该股近期 AI 判断 (只注入有结果的, 避免锚定效应)
         hist_str = ""
         if inp.history:
             lines = []
-            for h in inp.history[-3:]:
-                outcome = h.get("outcome") or "持仓中"
+            decided = [h for h in inp.history if h.get("outcome") is not None]
+            for h in (decided or [])[-3:]:
                 pnl = h.get("close_pnl")
                 pnl_str = f" pnl={pnl}" if pnl is not None else ""
                 lines.append(
                     f"  {h.get('time','')[:16]} {h.get('action','?')} "
-                    f"[{h.get('session','')}] → {outcome}{pnl_str} | {h.get('reason','')[:50]}")
-            hist_str = "\n该股近期AI判断:\n" + "\n".join(lines) + "\n"
+                    f"[{h.get('session','')}] → {h.get('outcome','')}{pnl_str} | {h.get('reason','')[:50]}")
+            if lines:
+                hist_str = "\n该股历史交易结果(已平仓, 供参考):\n" + "\n".join(lines) + "\n"
 
         prompt = (
             f"分析 {inp.symbol}，给出交易决策。\n"
             f"时段: {inp.session}\n"
-            f"${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n\n"
+            f"${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n"
+            + (f"持仓: {inp.position_ctx.get('side','')} 开仓价=${inp.position_ctx.get('entry',0):.2f} "
+               f"持仓{inp.position_ctx.get('hours',0):.0f}小时 浮盈=${inp.position_ctx.get('pnl',0):.2f} "
+               f"当前SL=${inp.position_ctx.get('sl',0):.2f} TP=${inp.position_ctx.get('tp',0):.2f}\n"
+               if inp.position_ctx else "")
+            + "\n"
             + (f"15m RSI={inp.ind_15m.get('rsi',50):.0f} MA10={inp.ind_15m.get('ma10',0):.2f} MA30={inp.ind_15m.get('ma30',0):.2f} "
                f"MACD={inp.ind_15m.get('macd',0):.4f} ATR={inp.ind_15m.get('atr',0):.2f} "
                f"ADX={inp.ind_15m.get('adx',0):.0f} {inp.ind_15m.get('regime','')} "
@@ -179,10 +192,12 @@ class AINativeDecisionMaker:
             f"OI={inp.open_interest:.0f} 费率={inp.funding_rate*100:.4f}%\n"
             f"新闻 {inp.news_summary or '无'}\n"
             + hist_str
+            + rules_str
             + lesson_str
             + "\n输出JSON:\n"
             '{"action":"BUY/SELL/HOLD","stop_loss":x,"take_profit":x,"reason":"..."}\n'
             "HOLD是合法的。不确定就HOLD。\n"
+            "历史结果仅供参考——行情会反转, 必须以当前数据为准, 绝不因旧判断而固执。\n"
             "时段策略: regular(盘中)正常交易; pre_market盘前/post_market盘后/closed深夜流动性差,"
             "除非信号极强否则HOLD; weekend周末休市必HOLD。"
         )
@@ -195,11 +210,11 @@ class AINativeDecisionMaker:
 
     # ═══ 自我复盘 ═══════════════════════
 
-    async def review_and_learn(self, memory) -> list[str]:
-        """AI 读历史决策+结果，输出经验教训。"""
+    async def review_and_learn(self, memory) -> tuple[list[str], list[str]]:
+        """AI 读历史决策+结果 → (经验教训, 硬规则)。"""
         decisions = memory.recent_decisions(30)
         if len(decisions) < 5:
-            return []
+            return [], []
         stats = memory.stats()
         lines = []
         # 只显示有结果的决策 (win/loss/flat), 排除纯 HOLD 噪音
@@ -208,38 +223,64 @@ class AINativeDecisionMaker:
             lines.append(
                 f"{d['time'][:16]} {d['symbol']} {d['action']} "
                 f"RSI={d['rsi_1h']} ADX={d['adx']} {d['regime']} "
-                f"[{d['session']}] → {d['outcome'] or 'open'} pnl={d['close_pnl']} | {d['reason'][:60]}")
+                f"[{d['session']}] → {d['outcome'] or 'open'} pnl={d['close_pnl']} "
+                f"SL%={d.get('sl_pct')} TP%={d.get('tp_pct')} "
+                f"平因={d.get('close_reason') or '-'} | {d['reason'][:50]}")
+
+        # SL/TP 效果统计 (B: 止损距离 vs 胜率)
+        sl_stats = ""
+        sl_buckets = {}
+        for d in decided:
+            sp = d.get("sl_pct")
+            if sp is not None:
+                bucket = "紧(≤2%)" if sp <= 2 else ("中(2-5%)" if sp <= 5 else "宽(>5%)")
+                sl_buckets.setdefault(bucket, [0, 0, 0])
+                o = d["outcome"]
+                sl_buckets[bucket][0 if o == "win" else 1 if o == "loss" else 2] += 1
+        if sl_buckets:
+            parts = []
+            for b, (w, l, f) in sl_buckets.items():
+                total = w + l + f
+                if total:
+                    parts.append(f"{b}: 胜{w}/负{l}/平{f} ({w/total*100:.0f}%)")
+            sl_stats = "\n止损距离效果: " + "; ".join(parts)
+
         stats_str = (
             f"总{stats['total']} 胜{stats['win']} 负{stats['loss']} "
             f"平{stats['flat']}\n"
             f"按时段: {json.dumps(stats['by_session'], ensure_ascii=False)}\n"
             f"按regime: {json.dumps(stats['by_regime'], ensure_ascii=False)}\n"
             f"按方向: {json.dumps(stats['by_action'], ensure_ascii=False)}"
+            + sl_stats
         )
         prompt = (
             "你是交易系统复盘员。以下是最近交易决策与结果：\n\n"
             + "\n".join(lines) + "\n\n"
             + "统计:\n" + stats_str + "\n\n"
-            "总结 3-5 条可执行的经验教训，用于改进未来决策。规则：\n"
-            "1. 只写可操作的（如'RSI>70时追多易亏'、'盘后开仓胜率低'、'ADX<20震荡期应HOLD'）\n"
-            "2. 每条 ≤60 字，中文\n"
-            "3. 输出JSON数组，如 [\"经验1\", \"经验2\"]"
+            "输出JSON对象:\n"
+            '{"lessons": ["经验1","经验2","经验3"], "rules": ["禁止项1","禁止项2"]}\n'
+            "lessons: 3-5条可操作经验 (如'RSI>70追多易亏','盘后胜率低'), 每条≤60字中文\n"
+            "rules: 1-3条硬规则, 必须是否定句/禁止项, 针对反复出现的亏损模式\n"
+            "       (如'ADX<20时禁止开仓','盘后禁止新开仓'), 每条≤50字中文"
         )
         raw = await self._call(
-            system="你是交易复盘员，只输出JSON数组。",
+            system="你是交易复盘员，只输出JSON对象。",
             prompt=prompt, model="deepseek-v4-flash",
             temp=0.3, max_tokens=2000, json_mode=False,
         )
         parsed = self._parse_json(raw)
-        if isinstance(parsed, list):
-            lessons = [str(x)[:80] for x in parsed][:6]
+        if isinstance(parsed, dict):
+            lessons = [str(x)[:80] for x in parsed.get("lessons", [])][:6]
+            rules = [str(x)[:60] for x in parsed.get("rules", [])][:4]
             if lessons:
-                logger.info("AI 复盘: %d 条经验", len(lessons))
+                logger.info("AI 复盘: %d 条经验, %d 条硬规则", len(lessons), len(rules))
                 for l in lessons:
                     logger.info("  • %s", l)
-                return lessons
+                for r in rules:
+                    logger.info("  ⛔ %s", r)
+                return lessons, rules
         logger.warning("复盘解析失败: %s", str(raw)[:100])
-        return []
+        return [], []
 
     # ═══ 辅助 ═══════════════════════
 

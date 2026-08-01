@@ -38,6 +38,20 @@ def _bb_pos(ind, price: float) -> float:
     except Exception:
         return 0.5
 
+
+def _holding_hours(pos) -> float:
+    """持仓时长(小时)。"""
+    try:
+        if not getattr(pos, "opened_at", None):
+            return 0.0
+        from datetime import datetime, timezone
+        opened = pos.opened_at
+        if opened.tzinfo is None:
+            opened = opened.replace(tzinfo=timezone.utc)
+        return round((datetime.now(timezone.utc) - opened).total_seconds() / 3600, 1)
+    except Exception:
+        return 0.0
+
 FULL_SCAN_INTERVAL = 600
 QUOTE_INTERVAL = 30
 SYMBOL_REFRESH_INTERVAL = 14400
@@ -76,6 +90,7 @@ class AutoTrader:
         from src.strategies.ai_memory import AIMemory
         self._memory = AIMemory()
         self._lessons = self._memory.get_lessons(5)
+        self._rules = self._memory.get_rules(10)
         self._last_review = 0.0  # 复盘计时
         self._tech = TechnicalAnalyzer()
         self._regime_detector = MarketRegimeDetector()
@@ -192,7 +207,15 @@ class AutoTrader:
                         volume_24h=q.volume_24h,
                         session=get_us_session(),
                         lessons=self._lessons,
-                        history=self._memory.get_symbol_history(pos.symbol, 3))
+                        rules=self._rules,
+                        history=self._memory.get_symbol_history(pos.symbol, 3),
+                        position_ctx={
+                            "side": pos.side, "entry": pos.entry_price,
+                            "hours": _holding_hours(pos),
+                            "pnl": round(getattr(pos, 'unrealized_pnl', 0) or 0, 2),
+                            "sl": pos.stop_loss or 0,
+                            "tp": (pos.take_profit_levels[0] if pos.take_profit_levels else 0) or 0,
+                        })
                     sig = await self._ai_decider.decide(ai_inp)
                     if not sig:
                         continue
@@ -205,7 +228,10 @@ class AutoTrader:
                         await self._executor.close_position(pos.id, "AI_CLOSE")
                         # 回填决策结果
                         try:
-                            self._memory.close_decision(pos.symbol, q.mark_price, close_pnl)
+                            self._memory.close_decision(
+                                pos.symbol, q.mark_price, close_pnl,
+                                close_reason="AI_REVERSAL",
+                                holding_hours=_holding_hours(pos))
                         except Exception: pass
                     # 方向一致 → 更新止盈止损
                     elif (sig.action in ("BUY","STRONG_BUY") and pos.side=="LONG") or \
@@ -286,6 +312,7 @@ class AutoTrader:
                     volume_24h=q.volume_24h,
                     session=get_us_session(),
                     lessons=self._lessons,
+                    rules=self._rules,
                     history=self._memory.get_symbol_history(symbol, 3))
                 sig = await self._ai_decider.decide(ai_inp)
                 if sig:
@@ -297,7 +324,9 @@ class AutoTrader:
                     self._memory.log_decision(
                         symbol, sig.action, sig.reason, get_us_session(),
                         q.mark_price, ind_1h.rsi14, regime.adx, regime.regime,
-                        entry=q.mark_price)
+                        entry=q.mark_price,
+                        sl_price=sig.stop_loss,
+                        tp_price=sig.take_profits[0] if sig.take_profits else 0)
                 else:
                     logger.info("%s: AI=HOLD", symbol)
                     # 记录 HOLD (保证复盘有数据; 统计时只算有结果的)
@@ -319,11 +348,16 @@ class AutoTrader:
         if time.time() - self._last_review >= 12 * 3600:
             self._last_review = time.time()  # 先更新, 防止每轮空跑
             try:
-                lessons = await self._ai_decider.review_and_learn(self._memory)
+                lessons, rules = await self._ai_decider.review_and_learn(self._memory)
                 if lessons:
                     self._memory.set_lessons(lessons)
                     self._lessons = lessons
-                    logger.info("AI 已自我更新 %d 条经验", len(lessons))
+                if rules:
+                    self._memory.set_rules(rules)
+                    self._rules = rules
+                if lessons or rules:
+                    logger.info("AI 已自我更新 %d 条经验, %d 条硬规则",
+                               len(lessons), len(rules))
             except Exception as e:
                 logger.warning("AI 复盘失败: %s", e)
 
