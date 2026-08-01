@@ -199,7 +199,10 @@ class AINativeDecisionMaker:
             "HOLD是合法的。不确定就HOLD。\n"
             "历史结果仅供参考——行情会反转, 必须以当前数据为准, 绝不因旧判断而固执。\n"
             "时段策略: regular(盘中)正常交易; pre_market盘前/post_market盘后/closed深夜流动性差,"
-            "除非信号极强否则HOLD; weekend周末休市必HOLD。"
+            "除非信号极强否则HOLD; weekend周末休市必HOLD。\n"
+            "日内交易原则: 只做日内机会, 快进快出。"
+            "SL/TP需匹配当前ATR波动率, 止损设在与形态关键位+ATR缓冲处(过紧易被扫, 过宽回撤大);"
+            "止盈设在近期阻力/支撑或1.5-3倍风险位; 不追已大幅透支的行情。"
         )
         raw = await self._call(
             system="你是美股交易分析师。输出JSON，不要思考，直接给结果。",

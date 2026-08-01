@@ -220,7 +220,8 @@ class AutoTrader:
                     if not sig:
                         continue
                     if sig.action == "CLOSE":
-                        # AI 管仓判断平仓离场
+                        # AI 管仓判断平仓离场 (E: 用AI离场原因做close_reason)
+                        close_reason = f"MANAGE:{sig.reason[:40]}" if sig.reason else "MANAGE_CLOSE"
                         logger.info("%s %s → 管仓AI平仓: %s",
                                    pos.symbol, pos.side, sig.reason[:60])
                         close_pnl = getattr(pos, 'unrealized_pnl', 0) or 0
@@ -228,22 +229,41 @@ class AutoTrader:
                         try:
                             self._memory.close_decision(
                                 pos.symbol, q.mark_price, close_pnl,
-                                close_reason="MANAGE_CLOSE",
+                                close_reason=close_reason,
                                 holding_hours=_holding_hours(pos))
                         except Exception: pass
                         continue
-                    # HOLD + 动态更新止盈止损
+
+                    # C: 周末/深夜闭市 → 只检查不调整 SL/TP
+                    session = get_us_session()
+                    if session in ("weekend", "closed"):
+                        logger.info("%s %s | %s → 管仓检查, 不调整SL/TP",
+                                   pos.symbol, pos.side, session)
+                        continue
+
+                    # HOLD + 动态更新止盈止损 (A: 仅差异>0.5%才重挂)
                     if hasattr(self._executor, '_trader'):
+                        cur_sl = pos.stop_loss or 0
+                        cur_tp = (pos.take_profit_levels[0] if pos.take_profit_levels else 0) or 0
+                        new_sl = sig.stop_loss
+                        new_tp = sig.take_profits[0] if sig.take_profits else 0
+                        if new_sl <= 0 or new_tp <= 0:
+                            continue
+                        sl_changed = cur_sl <= 0 or abs(new_sl - cur_sl) / max(cur_sl, 1e-9) > 0.005
+                        tp_changed = cur_tp <= 0 or abs(new_tp - cur_tp) / max(cur_tp, 1e-9) > 0.005
+                        if not sl_changed and not tp_changed:
+                            continue  # 无实质变化, 不重挂
                         hold = "long" if pos.side == "LONG" else "short"
                         tpsl = "sell" if hold == "long" else "buy"
                         try:
-                            await self._executor._trader.place_stop_order(
-                                pos.symbol, hold, tpsl, sig.stop_loss, pos.quantity, "pos_loss")
-                            await self._executor._trader.place_stop_order(
-                                pos.symbol, hold, tpsl, sig.take_profits[0], pos.quantity, "pos_profit")
+                            if sl_changed:
+                                await self._executor._trader.place_stop_order(
+                                    pos.symbol, hold, tpsl, new_sl, pos.quantity, "pos_loss")
+                            if tp_changed:
+                                await self._executor._trader.place_stop_order(
+                                    pos.symbol, hold, tpsl, new_tp, pos.quantity, "pos_profit")
                             logger.info("%s SL→$%.2f TP→$%.2f | %s",
-                                       pos.symbol, sig.stop_loss, sig.take_profits[0],
-                                       sig.reason[:50])
+                                       pos.symbol, new_sl, new_tp, sig.reason[:50])
                         except Exception as e:
                             logger.warning("SL/TP更新失败 %s: %s", pos.symbol, e)
                 except Exception as e:
