@@ -190,7 +190,9 @@ class AutoTrader:
                         bench=bench, open_interest=q.open_interest,
                         funding_rate=getattr(q, 'funding_rate', 0) or 0,
                         volume_24h=q.volume_24h,
-                        session=get_us_session())
+                        session=get_us_session(),
+                        lessons=self._lessons,
+                        history=self._memory.get_symbol_history(pos.symbol, 3))
                     sig = await self._ai_decider.decide(ai_inp)
                     if not sig:
                         continue
@@ -283,7 +285,8 @@ class AutoTrader:
                     funding_rate=getattr(q, 'funding_rate', 0) or 0,
                     volume_24h=q.volume_24h,
                     session=get_us_session(),
-                    lessons=self._lessons)
+                    lessons=self._lessons,
+                    history=self._memory.get_symbol_history(symbol, 3))
                 sig = await self._ai_decider.decide(ai_inp)
                 if sig:
                     logger.info("%s: AI=%s SL=$%.2f TP=$%.2f",

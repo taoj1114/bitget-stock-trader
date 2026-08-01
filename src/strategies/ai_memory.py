@@ -108,6 +108,11 @@ class AIMemory:
         """取最近决策（含结果），供复盘。"""
         return self._data["decisions"][-limit:]
 
+    def get_symbol_history(self, symbol: str, limit: int = 3) -> list[dict]:
+        """品种记忆: 该股票最近的 AI 判断记录。"""
+        hist = [d for d in self._data["decisions"] if d["symbol"] == symbol]
+        return hist[-limit:]
+
     def stats(self) -> dict:
         """决策统计：胜率、按时段/regime/方向分组。"""
         decisions = [d for d in self._data["decisions"] if d["outcome"] is not None]

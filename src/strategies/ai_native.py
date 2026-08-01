@@ -61,6 +61,7 @@ class AIInput:
     ind_15m: dict | None = None  # 日内主指标
     session: str = "regular"  # pre_market / regular / post_market / weekend / holiday
     lessons: list[str] = field(default_factory=list)  # 复盘经验
+    history: list[dict] = field(default_factory=list)  # 品种记忆: 该股近期AI判断
 
 
 class AINativeDecisionMaker:
@@ -147,6 +148,19 @@ class AINativeDecisionMaker:
         if lessons:
             lesson_str = "\n历史经验(复盘总结):\n" + "\n".join(f"  • {l}" for l in lessons) + "\n"
 
+        # 品种记忆: 该股近期 AI 判断
+        hist_str = ""
+        if inp.history:
+            lines = []
+            for h in inp.history[-3:]:
+                outcome = h.get("outcome") or "持仓中"
+                pnl = h.get("close_pnl")
+                pnl_str = f" pnl={pnl}" if pnl is not None else ""
+                lines.append(
+                    f"  {h.get('time','')[:16]} {h.get('action','?')} "
+                    f"[{h.get('session','')}] → {outcome}{pnl_str} | {h.get('reason','')[:50]}")
+            hist_str = "\n该股近期AI判断:\n" + "\n".join(lines) + "\n"
+
         prompt = (
             f"分析 {inp.symbol}，给出交易决策。\n"
             f"时段: {inp.session}\n"
@@ -164,6 +178,7 @@ class AINativeDecisionMaker:
             + f"大盘 {bench_str}\n"
             f"OI={inp.open_interest:.0f} 费率={inp.funding_rate*100:.4f}%\n"
             f"新闻 {inp.news_summary or '无'}\n"
+            + hist_str
             + lesson_str
             + "\n输出JSON:\n"
             '{"action":"BUY/SELL/HOLD","stop_loss":x,"take_profit":x,"reason":"..."}\n'
