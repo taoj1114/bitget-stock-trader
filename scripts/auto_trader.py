@@ -83,16 +83,22 @@ class AutoTrader:
         from src.datasources.news.yahoo import YahooNewsSource
         from src.datasources.news.searxng import SearXNGNewsSource
         from src.datasources.news.finnhub import FinnhubNewsSource
+        from src.datasources.news.google import GoogleNewsSource
         from src.datasources.news.registry import NewsRegistry
         self._news_registry = NewsRegistry(
-            primary_name=config.news_sources.get("primary", "yahoo"),
+            primary_name="google",  # Google News RSS: 免费无限, 精准
             fallback_name=config.news_sources.get("fallback", "searxng"),
+            fallback2_name="yahoo",
         )
+        self._news_registry.register(GoogleNewsSource())
         self._news_registry.register(YahooNewsSource())
         self._news_registry.register(SearXNGNewsSource(base_url=config.searxng_base_url, timeout=config.searxng_timeout))
-        finnhub_token = config.news_sources.get("finnhub", {}).get("token", "")
+        # Finnhub: config token 或环境变量
+        import os as _os
+        finnhub_token = config.news_sources.get("finnhub", {}).get("token", "") or _os.environ.get("FINNHUB_API_KEY", "")
         if finnhub_token:
             self._news_registry.register(FinnhubNewsSource(api_key=finnhub_token))
+            logger.info("Finnhub 新闻源已注册")
 
         self._last_prices: dict[str, float] = {}
         self._last_full_scan = 0.0
