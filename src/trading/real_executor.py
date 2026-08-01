@@ -21,6 +21,7 @@ class RealExecutor:
         self._ready = self._trader.ready
         self._positions: dict[str, Position] = {}  # position_id → Position (内存缓存)
         self._equity = 10000  # 兜底（会在 execute_signal 时更新）
+        self._contract_info: dict = {}  # symbol → 合约规格缓存
         from src.trading.tracker import Tracker
         self._tracker = Tracker(mode="real")
 
@@ -42,12 +43,19 @@ class RealExecutor:
         if not signal.take_profits or signal.take_profits[0] <= 0:
             return OrderResult(status="REJECTED", reason="缺止盈价位")
 
-        # 实盘：查账户可用保证金
+        # 实盘：查账户总净值 (余额 + 未实现盈亏)
         try:
             acct = await self._trader.get_account()
-            self._equity = acct.available  # 可用 = 净值 - 已用保证金
+            self._equity = acct.equity  # 总净值, 用于每仓 = equity/5
         except Exception:
             pass
+
+        # 预取合约规格 (minTradeNum/sizeMultiplier/minTradeUSDT)
+        if signal.symbol not in self._contract_info:
+            try:
+                self._contract_info[signal.symbol] = await self._trader.get_contract_info(signal.symbol)
+            except Exception:
+                pass
 
         quantity = self._calc_quantity_sync(signal)
 
@@ -226,35 +234,37 @@ class RealExecutor:
     # ═══ 辅助 ═══════════════════════════════════
 
     def _calc_quantity_sync(self, signal: Signal) -> float:
-        """合约仓位 — 小账户均分保证金, 按最小交易量向上取整。"""
+        """合约仓位 — 每仓=总余额1/5保证金 × 杠杆, 按合约规格取整。
+
+        规则:
+          1. 最多5仓 → 每仓保证金 = 总余额 / 5
+          2. 仓位价值 = 保证金 × 杠杆倍数
+          3. 名义价值 ≥ min_trade_usdt ($5): qty ≥ $5 / 价格
+          4. 满足 min_trade_num (最小下单量) + size_multiplier (步进)
+        """
         import math
         equity = self._get_equity_sync()
         if equity <= 0:
-            return 0.01
+            return 0.0
 
         leverage = self._calc_leverage(signal)
-        multiplier = 0.01  # sizeMultiplier
+        # 合约规格 (动态获取, 失败时默认 0.01/$5)
+        contract = self._contract_info.get(signal.symbol, {})
+        multiplier = contract.get("size_multiplier", 0.01)
+        min_num = contract.get("min_trade_num", 0.01)
+        min_usdt = contract.get("min_trade_usdt", 5)
 
-        # 小账户 (≤$20): 总资金/5，每仓等分
-        if equity <= 20:
-            margin_per_position = equity * 0.95 / 5
-            qty = (margin_per_position * leverage) / signal.entry_price
-            qty = math.ceil(qty / multiplier) * multiplier
-            # 保证名义价值 ≥ $5 且满足最小交易量
-            min_qty = math.ceil(5 / signal.entry_price / multiplier) * multiplier
-            return max(qty, min_qty)
-
-        # 大账户 (>$20): 2% 风险
-        risk_pct = 0.02
-        if signal.stop_loss > 0 and signal.entry_price > 0:
-            stop_pct = abs(signal.entry_price - signal.stop_loss) / signal.entry_price
-            stop_pct = max(stop_pct, 0.01)
-        else:
-            stop_pct = 0.05
-
-        raw_qty = (equity * risk_pct) / (signal.entry_price * stop_pct)
-        max_by_margin = (equity * 0.8 * leverage) / signal.entry_price if equity > 0 else 0
-        return max(0.01, min(raw_qty, max_by_margin))
+        # 每仓保证金 = 总余额 1/5
+        margin_per_position = equity / 5.0
+        # 仓位价值 = 保证金 × 杠杆 → 数量
+        qty = (margin_per_position * leverage) / signal.entry_price if signal.entry_price > 0 else 0
+        # 满足最低名义价值 $5 → 最低数量
+        min_qty_val = min_usdt / signal.entry_price if signal.entry_price > 0 else min_num
+        # 数量取整: 步进向上取整, 且 ≥ 最小下单量
+        qty = math.ceil(max(qty, min_qty_val) / multiplier) * multiplier
+        if qty < min_num:
+            qty = math.ceil(min_num / multiplier) * multiplier
+        return round(qty, 4)
 
     def _get_equity_sync(self) -> float:
         """同步获取净值（实盘：通过 execute_signal 时 API 更新）。"""

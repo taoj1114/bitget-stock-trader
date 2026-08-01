@@ -112,6 +112,35 @@ class BitgetTrader:
             return {"code": str(resp.status_code), "msg": resp.text[:200]}
         return resp.json()
 
+    # ── 合约信息 (最低下单量/步进) ──────────
+    _contract_cache: dict = {}
+
+    async def get_contract_info(self, symbol: str) -> dict:
+        """获取合约规格: minTradeNum(最小下单量) / sizeMultiplier(步进) / minTradeUSDT(最低价值)。"""
+        sym = symbol.upper()
+        if sym in self._contract_cache:
+            return self._contract_cache[sym]
+        try:
+            if not self._client:
+                self._client = httpx.AsyncClient(timeout=15)
+            resp = await self._client.get(
+                f"{BASE_URL}/api/v2/mix/market/contracts",
+                params={"productType": "USDT-FUTURES", "symbol": f"{sym}USDT"},
+                timeout=10,
+            )
+            data = resp.json().get("data", [{}])
+            info = (data[0] if data else {}) or {}
+            result = {
+                "min_trade_num": float(info.get("minTradeNum", 0.01)),
+                "size_multiplier": float(info.get("sizeMultiplier", 0.01)),
+                "min_trade_usdt": float(info.get("minTradeUSDT", 5)),
+            }
+            self._contract_cache[sym] = result
+            return result
+        except Exception as e:
+            logger.warning("contract info %s 失败: %s", symbol, e)
+            return {"min_trade_num": 0.01, "size_multiplier": 0.01, "min_trade_usdt": 5}
+
     # ═══ 下单 ═══════════════════════════════════
 
     async def place_order(
