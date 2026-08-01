@@ -21,6 +21,8 @@ class RealExecutor:
         self._ready = self._trader.ready
         self._positions: dict[str, Position] = {}  # position_id → Position (内存缓存)
         self._equity = 10000  # 兜底（会在 execute_signal 时更新）
+        from src.trading.tracker import Tracker
+        self._tracker = Tracker()
 
     @property
     def ready(self) -> bool:
@@ -115,6 +117,13 @@ class RealExecutor:
                 stop_loss=signal.stop_loss,
                 take_profit_levels=[],
             )
+            # 记录开仓
+            try:
+                self._tracker.record_open(
+                    self._positions[pos_id], signal,
+                    spread=0.0006)  # taker 费率
+            except Exception as e:
+                logger.warning("记录开仓失败: %s", e)
             return OrderResult(status="FILLED", position_id=pos_id,
                              fill_price=signal.entry_price, fill_quantity=quantity)
         else:
@@ -138,6 +147,15 @@ class RealExecutor:
 
         if resp.get("code") == "00000":
             logger.info("✅ 真实平仓: %s %s (%s)", symbol, side, reason)
+            # 记录平仓 (用持仓浮盈作为 PnL)
+            try:
+                if pos:
+                    pnl = getattr(pos, "unrealized_pnl", 0) or 0
+                    self._tracker.record_close(
+                        pos, pos.mark_price, pnl, reason,
+                        pos.strategy_id, funding_cost=0)
+            except Exception as e:
+                logger.warning("记录平仓失败: %s", e)
             if position_id in self._positions:
                 del self._positions[position_id]
             return OrderResult(status="CLOSED", reason=reason)

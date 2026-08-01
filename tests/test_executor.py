@@ -4,14 +4,17 @@ import pytest
 
 from src.core.types import Signal
 from src.trading.paper_executor import PaperExecutor
+from src.trading.tracker import Tracker
 
 
 class TestPaperExecutor:
     """纸盘执行器核心行为"""
 
     @pytest.fixture
-    def executor(self):
-        return PaperExecutor()
+    def executor(self, tmp_path):
+        # 隔离: 测试用临时 DB, 不污染 data/trades.db
+        tracker = Tracker(db_path=str(tmp_path / "test_trades.db"))
+        return PaperExecutor(tracker=tracker)
 
     # ── 开仓 ──────────────────────────────
 
@@ -26,8 +29,9 @@ class TestPaperExecutor:
         assert len(positions) == 1
 
     @pytest.mark.asyncio
-    async def test_short_position_side_correct(self):
-        executor = PaperExecutor()
+    async def test_short_position_side_correct(self, tmp_path):
+        tracker = Tracker(db_path=str(tmp_path / "t.db"))
+        executor = PaperExecutor(tracker=tracker)
         sig = Signal(strategy_id="test", symbol="AAPL",
                      action="SELL", confidence=0.8,
                      entry_price=150.0, stop_loss=160.0,
@@ -63,8 +67,9 @@ class TestPaperExecutor:
         assert len(positions) == 1
 
     @pytest.mark.asyncio
-    async def test_short_position_side_correct(self):
-        executor = PaperExecutor()
+    async def test_short_position_side_correct(self, tmp_path):
+        tracker = Tracker(db_path=str(tmp_path / "t.db"))
+        executor = PaperExecutor(tracker=tracker)
         sig = Signal(strategy_id="test", symbol="NVDA",
                      action="SELL", confidence=0.8,
                      entry_price=200.0, stop_loss=220.0,
