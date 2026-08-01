@@ -208,6 +208,99 @@ class AINativeDecisionMaker:
         )
         return self._parse_json(raw)
 
+    # ═══ 管仓 (持仓管理) ═══════════════════
+
+    async def manage_position(self, inp: AIInput) -> Optional[Signal]:
+        """管仓决策 — 日内持仓管理, 动态止盈止损。
+
+        专注: 最大化日内利润 + 控制回撤
+        - 移动止损锁利 (盈利后上移/下移止损保本)
+        - 目标位动态调整 (接近TP收紧, 趋势强让利润奔跑)
+        - 时间衰减 (日内持仓不宜过久, 避免隔夜风险)
+        返回: Signal(action=HOLD/CLOSE/ADJUST, SL/TP) 或 None(HOLD)
+        """
+        ctx = inp.position_ctx or {}
+        bench_str = " ".join(f"{k}{v:+.1f}%" for k, v in inp.bench.items())
+
+        # 品种历史 (管仓记忆, 仅看已平仓结果避免锚定)
+        hist_str = ""
+        if inp.history:
+            decided = [h for h in inp.history if h.get("outcome") is not None][-3:]
+            if decided:
+                lines = [f"  {h.get('time','')[:16]} {h.get('action','?')} → {h.get('outcome','')} "
+                         f"pnl={h.get('close_pnl')} SL%={h.get('sl_pct')} | {h.get('reason','')[:40]}"
+                         for h in decided]
+                hist_str = "\n该股历史交易结果:\n" + "\n".join(lines) + "\n"
+
+        prompt = (
+            f"你是日内交易持仓管理AI。管理 {inp.symbol} 的持仓, 目标是日内最大获利 + 最小回撤。\n"
+            f"时段: {inp.session} | ${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n\n"
+            f"持仓: {ctx.get('side','?')} 开仓价=${ctx.get('entry',0):.2f} "
+            f"持仓{ctx.get('hours',0):.0f}小时 浮盈=${ctx.get('pnl',0):.2f}\n"
+            f"当前SL=${ctx.get('sl',0):.2f} 当前TP=${ctx.get('tp',0):.2f}\n\n"
+            + (f"15m RSI={inp.ind_15m.get('rsi',50):.0f} MA10={inp.ind_15m.get('ma10',0):.2f} MA30={inp.ind_15m.get('ma30',0):.2f} "
+               f"ADX={inp.ind_15m.get('adx',0):.0f} {inp.ind_15m.get('regime','')} "
+               f"VWAP={inp.ind_15m.get('vwap',0):.2f} 量比={inp.ind_15m.get('volume_ratio',1):.1f} BB={inp.ind_15m.get('bb_position',0.5):.2f} [日内]\n" if inp.ind_15m else "")
+            + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} MA10={inp.ind_1h.get('ma10',0):.1f} MA30={inp.ind_1h.get('ma30',0):.1f} "
+            f"ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')}\n"
+            + (f"4H RSI={inp.ind_4h.get('rsi',0):.0f}\n" if inp.ind_4h else "")
+            + (f"1D RSI={inp.ind_1d.get('rsi',0):.0f}\n" if inp.ind_1d else "")
+            + f"大盘 {bench_str}\n"
+            + hist_str
+            + "\n日内持仓管理原则:\n"
+            "1. 移动止损: 盈利后止损随价格移动锁利(保本→1R→更高), 不要死守开仓时的止损\n"
+            "2. 目标管理: 接近TP时收紧止损保护利润; 趋势强劲+动量确认时允许让利润奔跑\n"
+            "3. 回撤保护: 浮盈回吐超过50%时坚决平仓或收紧止损, 不让盈利变亏损\n"
+            "4. 时间因素: 日内交易持仓不宜过久; 接近收盘/盘后流动性差时倾向落袋\n"
+            "5. 风险平衡: 止损距离必须匹配当前ATR/波动率, 太紧易被扫, 太宽回撤大\n"
+            "6. 方向反转信号明确时(趋势+动量+量能共振)果断平仓\n\n"
+            "输出JSON:\n"
+            '{"action":"HOLD/CLOSE","stop_loss":x,"take_profit":x,"reason":"..."}\n'
+            "HOLD=继续持有(可调整SL/TP), CLOSE=平仓离场。\n"
+            "stop_loss/take_profit 为调整后的新价位(不调整则填当前值)。"
+        )
+        raw = await self._call(
+            system="你是日内交易持仓管理AI。输出JSON。",
+            prompt=prompt, model="deepseek-v4-flash",
+            temp=0.2, max_tokens=2000, json_mode=False,
+        )
+        result = self._parse_json(raw)
+        if not result:
+            return None
+        action = result.get("action", "HOLD")
+        if action == "CLOSE":
+            # 平仓信号: 直接返回 CLOSE 信号 (auto_trader 处理)
+            return Signal(
+                strategy_id="ai_manage", symbol=inp.symbol,
+                action="CLOSE",
+                confidence=0.8,
+                entry_price=inp.mark_price, stop_loss=0,
+                take_profits=[], reason=result.get("reason", "")[:300],
+            )
+        # HOLD + 新 SL/TP (或保持当前)
+        cur_sl = ctx.get("sl", 0) or 0
+        cur_tp = ctx.get("tp", 0) or 0
+        new_sl = float(result.get("stop_loss", cur_sl) or cur_sl)
+        new_tp = float(result.get("take_profit", cur_tp) or cur_tp)
+        is_long = ctx.get("side", "") == "LONG"
+
+        # 有效性校验
+        if new_sl <= 0 or new_tp <= 0:
+            return None
+        if is_long and (new_sl >= inp.mark_price or new_tp <= inp.mark_price):
+            return None
+        if not is_long and (new_sl <= inp.mark_price or new_tp >= inp.mark_price):
+            return None
+
+        return Signal(
+            strategy_id="ai_manage", symbol=inp.symbol,
+            action="HOLD",
+            confidence=0.8,
+            entry_price=inp.mark_price, stop_loss=new_sl,
+            take_profits=[new_tp],
+            reason=result.get("reason", "")[:300],
+        )
+
     # ═══ 自我复盘 ═══════════════════════
 
     async def review_and_learn(self, memory) -> tuple[list[str], list[str]]:

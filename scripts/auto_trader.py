@@ -207,7 +207,6 @@ class AutoTrader:
                         volume_24h=q.volume_24h,
                         session=get_us_session(),
                         lessons=self._lessons,
-                        rules=self._rules,
                         history=self._memory.get_symbol_history(pos.symbol, 3),
                         position_ctx={
                             "side": pos.side, "entry": pos.entry_price,
@@ -216,37 +215,37 @@ class AutoTrader:
                             "sl": pos.stop_loss or 0,
                             "tp": (pos.take_profit_levels[0] if pos.take_profit_levels else 0) or 0,
                         })
-                    sig = await self._ai_decider.decide(ai_inp)
+                    # 管仓专用决策器: 日内持仓管理, 动态止盈止损
+                    sig = await self._ai_decider.manage_position(ai_inp)
                     if not sig:
                         continue
-                    # 方向相反 → 平仓
-                    if (sig.action in ("SELL","STRONG_SELL") and pos.side=="LONG") or \
-                       (sig.action in ("BUY","STRONG_BUY") and pos.side=="SHORT"):
-                        logger.info("%s %s → AI 平仓", pos.symbol, pos.side)
-                        # 平仓前记录真实浮盈 (get_positions 已同步交易所)
+                    if sig.action == "CLOSE":
+                        # AI 管仓判断平仓离场
+                        logger.info("%s %s → 管仓AI平仓: %s",
+                                   pos.symbol, pos.side, sig.reason[:60])
                         close_pnl = getattr(pos, 'unrealized_pnl', 0) or 0
-                        await self._executor.close_position(pos.id, "AI_CLOSE")
-                        # 回填决策结果
+                        await self._executor.close_position(pos.id, "AI_MANAGE_CLOSE")
                         try:
                             self._memory.close_decision(
                                 pos.symbol, q.mark_price, close_pnl,
-                                close_reason="AI_REVERSAL",
+                                close_reason="MANAGE_CLOSE",
                                 holding_hours=_holding_hours(pos))
                         except Exception: pass
-                    # 方向一致 → 更新止盈止损
-                    elif (sig.action in ("BUY","STRONG_BUY") and pos.side=="LONG") or \
-                         (sig.action in ("SELL","STRONG_SELL") and pos.side=="SHORT"):
-                        if hasattr(self._executor, '_trader'):
-                            hold = "long" if pos.side == "LONG" else "short"
-                            tpsl = "sell" if hold == "long" else "buy"
-                            try:
-                                await self._executor._trader.place_stop_order(
-                                    pos.symbol, hold, tpsl, sig.stop_loss, pos.quantity, "pos_loss")
-                                await self._executor._trader.place_stop_order(
-                                    pos.symbol, hold, tpsl, sig.take_profits[0], pos.quantity, "pos_profit")
-                                logger.info("%s SL→$%.2f TP→$%.2f", pos.symbol, sig.stop_loss, sig.take_profits[0])
-                            except Exception as e:
-                                logger.warning("SL/TP更新失败 %s: %s", pos.symbol, e)
+                        continue
+                    # HOLD + 动态更新止盈止损
+                    if hasattr(self._executor, '_trader'):
+                        hold = "long" if pos.side == "LONG" else "short"
+                        tpsl = "sell" if hold == "long" else "buy"
+                        try:
+                            await self._executor._trader.place_stop_order(
+                                pos.symbol, hold, tpsl, sig.stop_loss, pos.quantity, "pos_loss")
+                            await self._executor._trader.place_stop_order(
+                                pos.symbol, hold, tpsl, sig.take_profits[0], pos.quantity, "pos_profit")
+                            logger.info("%s SL→$%.2f TP→$%.2f | %s",
+                                       pos.symbol, sig.stop_loss, sig.take_profits[0],
+                                       sig.reason[:50])
+                        except Exception as e:
+                            logger.warning("SL/TP更新失败 %s: %s", pos.symbol, e)
                 except Exception as e:
                     logger.error("管仓 %s 失败: %s", pos.symbol, e)
 
