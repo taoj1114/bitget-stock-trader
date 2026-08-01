@@ -67,12 +67,15 @@ class AIInput:
 
 
 class AINativeDecisionMaker:
-    """AI 原生决策器。Flash 过滤 → Pro 决策。"""
+    """AI 原生决策器。模型/API 可配置 (config.yaml deepseek 段)。"""
 
-    def __init__(self):
+    def __init__(self, model: str = "deepseek-v4-flash",
+                 base_url: str = "https://api.deepseek.com",
+                 api_key: str = ""):
         self._client: Optional[httpx.AsyncClient] = None
-        self._api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-        self._base_url = "https://api.deepseek.com"
+        self._api_key = api_key or os.environ.get("DEEPSEEK_API_KEY", "")
+        self._base_url = base_url
+        self._model = model
 
     async def _call(self, system: str, prompt: str, model: str,
                     temp: float, max_tokens: int, json_mode: bool = False) -> str:
@@ -183,7 +186,7 @@ class AINativeDecisionMaker:
         )
         raw = await self._call(
             system="你是美股交易分析师。输出JSON，不要思考，直接给结果。",
-            prompt=prompt, model="deepseek-v4-flash",
+            prompt=prompt, model=self._model,
             temp=0.3, max_tokens=4000, json_mode=False,
         )
         return self._parse_json(raw)
@@ -245,7 +248,7 @@ class AINativeDecisionMaker:
         )
         raw = await self._call(
             system="你是日内交易持仓管理AI。输出JSON。",
-            prompt=prompt, model="deepseek-v4-flash",
+            prompt=prompt, model=self._model,
             temp=0.2, max_tokens=2000, json_mode=False,
         )
         result = self._parse_json(raw)
@@ -342,7 +345,7 @@ class AINativeDecisionMaker:
         )
         raw = await self._call(
             system="你是交易复盘员，只输出JSON对象。",
-            prompt=prompt, model="deepseek-v4-flash",
+            prompt=prompt, model=self._model,
             temp=0.3, max_tokens=2000, json_mode=False,
         )
         parsed = self._parse_json(raw)
