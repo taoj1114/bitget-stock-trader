@@ -58,6 +58,7 @@ class AIInput:
     open_interest: float
     funding_rate: float
     volume_24h: float = 0.0
+    ind_15m: dict | None = None  # 日内主指标
     session: str = "regular"  # pre_market / regular / post_market / weekend / holiday
     lessons: list[str] = field(default_factory=list)  # 复盘经验
 
@@ -150,7 +151,10 @@ class AINativeDecisionMaker:
             f"分析 {inp.symbol}，给出交易决策。\n"
             f"时段: {inp.session}\n"
             f"${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n\n"
-            f"1H RSI={inp.ind_1h.get('rsi',50):.0f} MA10={inp.ind_1h.get('ma10',0):.1f} MA30={inp.ind_1h.get('ma30',0):.1f} "
+            + (f"15m RSI={inp.ind_15m.get('rsi',50):.0f} MA10={inp.ind_15m.get('ma10',0):.2f} MA30={inp.ind_15m.get('ma30',0):.2f} "
+               f"MACD={inp.ind_15m.get('macd',0):.4f} ATR={inp.ind_15m.get('atr',0):.2f} "
+               f"ADX={inp.ind_15m.get('adx',0):.0f} {inp.ind_15m.get('regime','')} [日内]\n" if inp.ind_15m else "")
+            + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} MA10={inp.ind_1h.get('ma10',0):.1f} MA30={inp.ind_1h.get('ma30',0):.1f} "
             f"MACD={inp.ind_1h.get('macd',0):.3f} ATR={inp.ind_1h.get('atr',0):.2f} "
             f"ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')}\n"
             + (f"4H RSI={inp.ind_4h.get('rsi',0):.0f} MA10={inp.ind_4h.get('ma10',0):.1f} MA30={inp.ind_4h.get('ma30',0):.1f}\n" if inp.ind_4h else "")

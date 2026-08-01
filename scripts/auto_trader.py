@@ -130,6 +130,7 @@ class AutoTrader:
             for pos in positions:
                 try:
                     k_1h = await self._market.get_klines(pos.symbol, "1H", 500)
+                    k_15m = await self._market.get_klines(pos.symbol, "15m", 500)
                     q = await self._market.get_quote(pos.symbol)
                     if not q or len(k_1h) < 30: continue
                     ind = self._tech.calculate(k_1h)
@@ -138,6 +139,13 @@ class AutoTrader:
                     k_1d = [Kline(**r) for r in agg.aggregate(k_1h, "1D")]
                     ind4 = self._tech.calculate(k_4h) if len(k_4h)>=5 else None
                     ind1d = self._tech.calculate(k_1d) if len(k_1d)>=3 else None
+                    ind15 = None
+                    if len(k_15m) >= 30:
+                        i15 = self._tech.calculate(k_15m)
+                        r15 = self._regime_detector.detect(k_15m)
+                        ind15 = dict(rsi=i15.rsi14, ma10=i15.ma10, ma30=i15.ma30,
+                                     macd=i15.macd, atr=i15.atr14,
+                                     adx=r15.adx, regime=r15.regime)
                     news_items = []
                     try:
                         news_items = await self._news_registry.fetch_news(pos.symbol, max_results=5)
@@ -151,6 +159,7 @@ class AutoTrader:
                                    regime=reg.regime, bb_position=0.5),
                         ind_4h=dict(rsi=ind4.rsi14) if ind4 else None,
                         ind_1d=dict(rsi=ind1d.rsi14) if ind1d else None,
+                        ind_15m=ind15,
                         news=news_titles, news_summary="; ".join(news_titles[:3]),
                         bench=bench, open_interest=q.open_interest,
                         funding_rate=getattr(q, 'funding_rate', 0) or 0,
@@ -163,11 +172,12 @@ class AutoTrader:
                     if (sig.action in ("SELL","STRONG_SELL") and pos.side=="LONG") or \
                        (sig.action in ("BUY","STRONG_BUY") and pos.side=="SHORT"):
                         logger.info("%s %s → AI 平仓", pos.symbol, pos.side)
-                        result = await self._executor.close_position(pos.id, "AI_CLOSE")
-                        # 回填决策结果 (实盘从交易所查净值变化, 简化用 getattr)
+                        # 平仓前记录真实浮盈 (get_positions 已同步交易所)
+                        close_pnl = getattr(pos, 'unrealized_pnl', 0) or 0
+                        await self._executor.close_position(pos.id, "AI_CLOSE")
+                        # 回填决策结果
                         try:
-                            pnl = getattr(result, "pnl", 0) or 0
-                            self._memory.close_decision(pos.symbol, q.mark_price, pnl)
+                            self._memory.close_decision(pos.symbol, q.mark_price, close_pnl)
                         except Exception: pass
                     # 方向一致 → 更新止盈止损
                     elif (sig.action in ("BUY","STRONG_BUY") and pos.side=="LONG") or \
@@ -198,6 +208,7 @@ class AutoTrader:
             seen.add(symbol)
             try:
                 k_1h = await self._market.get_klines(symbol, "1H", 500)
+                k_15m = await self._market.get_klines(symbol, "15m", 500)
                 q = await self._market.get_quote(symbol)
                 if not q or len(k_1h) < 30: continue
                 ind_1h = self._tech.calculate(k_1h)
@@ -206,6 +217,13 @@ class AutoTrader:
                 k_1d = [Kline(**r) for r in agg.aggregate(k_1h, "1D")]
                 ind_4h_raw = self._tech.calculate(k_4h) if len(k_4h) >= 5 else None
                 ind_1d_raw = self._tech.calculate(k_1d) if len(k_1d) >= 3 else None
+                ind_15m_raw = None
+                if len(k_15m) >= 30:
+                    i15 = self._tech.calculate(k_15m)
+                    r15 = self._regime_detector.detect(k_15m)
+                    ind_15m_raw = dict(rsi=i15.rsi14, ma10=i15.ma10, ma30=i15.ma30,
+                                       macd=i15.macd, atr=i15.atr14,
+                                       adx=r15.adx, regime=r15.regime)
 
                 news_items = []
                 try: news_items = await self._news_registry.fetch_news(symbol, max_results=5)
@@ -220,6 +238,7 @@ class AutoTrader:
                                adx=regime.adx, regime=regime.regime, bb_position=0.5),
                     ind_4h=dict(rsi=ind_4h_raw.rsi14) if ind_4h_raw else None,
                     ind_1d=dict(rsi=ind_1d_raw.rsi14) if ind_1d_raw else None,
+                    ind_15m=ind_15m_raw,
                     news=news_titles, news_summary="; ".join(news_titles[:3]),
                     bench=bench, open_interest=q.open_interest,
                     funding_rate=getattr(q, 'funding_rate', 0) or 0,
@@ -239,9 +258,7 @@ class AutoTrader:
                         entry=q.mark_price)
                 else:
                     logger.info("%s: AI=HOLD", symbol)
-                    self._memory.log_decision(
-                        symbol, "HOLD", "AI判断无机会", get_us_session(),
-                        q.mark_price, ind_1h.rsi14, regime.adx, regime.regime)
+                    # HOLD 不记日志 (避免噪音淹没真实信号)
             except Exception as e:
                 logger.error("AI扫描 %s 失败: %s", symbol, e)
 

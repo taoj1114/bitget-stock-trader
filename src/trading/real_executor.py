@@ -208,18 +208,23 @@ class RealExecutor:
     # ═══ 辅助 ═══════════════════════════════════
 
     def _calc_quantity_sync(self, signal: Signal) -> float:
-        """合约仓位 — 小账户均分保证金。"""
+        """合约仓位 — 小账户均分保证金, 按最小交易量向上取整。"""
+        import math
         equity = self._get_equity_sync()
         if equity <= 0:
             return 0.01
 
         leverage = self._calc_leverage(signal)
+        multiplier = 0.01  # sizeMultiplier
 
         # 小账户 (≤$20): 总资金/5，每仓等分
         if equity <= 20:
             margin_per_position = equity * 0.95 / 5
             qty = (margin_per_position * leverage) / signal.entry_price
-            return max(0.01, qty)
+            qty = math.ceil(qty / multiplier) * multiplier
+            # 保证名义价值 ≥ $5 且满足最小交易量
+            min_qty = math.ceil(5 / signal.entry_price / multiplier) * multiplier
+            return max(qty, min_qty)
 
         # 大账户 (>$20): 2% 风险
         risk_pct = 0.02
