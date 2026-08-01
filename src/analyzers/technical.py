@@ -73,6 +73,16 @@ class TechnicalAnalyzer:
         if ind.volume_ma20 > 0 and volumes:
             ind.volume_ratio = round(volumes[-1] / ind.volume_ma20, 2)
 
+        # ── VWAP (当日累计成交量加权均价) ─────
+        # 15m/1H K线: 取最近一个交易日的K线 (非周末, 按UTC自然日近似)
+        day_ts = klines[-1].timestamp // 86400000 * 86400000  # 当天0点(UTC)
+        day_bars = [k for k in klines if k.timestamp >= day_ts and k.volume > 0]
+        if len(day_bars) >= 1:
+            pv_sum = sum((k.high + k.low + k.close) / 3 * k.volume for k in day_bars)
+            vol_sum = sum(k.volume for k in day_bars)
+            if vol_sum > 0:
+                ind.vwap = round(pv_sum / vol_sum, 4)
+
         # ── 其他 ─────────────────────────────
         if n >= 2:
             ind.change_pct = round((closes[-1] / closes[-2] - 1) * 100, 2)

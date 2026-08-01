@@ -27,6 +27,17 @@ from src.strategies.ai_native import AINativeDecisionMaker, AIInput, get_us_sess
 
 logger = logging.getLogger("autotrader")
 
+
+def _bb_pos(ind, price: float) -> float:
+    """布林带位置 0-1: 0=下轨 0.5=中轨 1=上轨。"""
+    try:
+        spread = ind.bb_upper - ind.bb_lower
+        if spread <= 0:
+            return 0.5
+        return round(max(0.0, min(1.0, (price - ind.bb_lower) / spread)), 2)
+    except Exception:
+        return 0.5
+
 FULL_SCAN_INTERVAL = 600
 QUOTE_INTERVAL = 30
 SYMBOL_REFRESH_INTERVAL = 14400
@@ -145,7 +156,10 @@ class AutoTrader:
                         r15 = self._regime_detector.detect(k_15m)
                         ind15 = dict(rsi=i15.rsi14, ma10=i15.ma10, ma30=i15.ma30,
                                      macd=i15.macd, atr=i15.atr14,
-                                     adx=r15.adx, regime=r15.regime)
+                                     adx=r15.adx, regime=r15.regime,
+                                     bb_position=_bb_pos(i15, q.mark_price),
+                                     volume_ratio=i15.volume_ratio,
+                                     vwap=i15.vwap)
                     news_items = []
                     try:
                         news_items = await self._news_registry.fetch_news(pos.symbol, max_results=5)
@@ -156,7 +170,10 @@ class AutoTrader:
                         klines_1h=k_1h, klines_4h=k_4h, klines_1d=k_1d,
                         ind_1h=dict(rsi=ind.rsi14, ma10=ind.ma10, ma30=ind.ma30,
                                    macd=ind.macd, atr=ind.atr14, adx=reg.adx,
-                                   regime=reg.regime, bb_position=0.5),
+                                   regime=reg.regime,
+                                   bb_position=_bb_pos(ind, q.mark_price),
+                                   volume_ratio=ind.volume_ratio,
+                                   vwap=ind.vwap),
                         ind_4h=dict(rsi=ind4.rsi14) if ind4 else None,
                         ind_1d=dict(rsi=ind1d.rsi14) if ind1d else None,
                         ind_15m=ind15,
@@ -223,7 +240,10 @@ class AutoTrader:
                     r15 = self._regime_detector.detect(k_15m)
                     ind_15m_raw = dict(rsi=i15.rsi14, ma10=i15.ma10, ma30=i15.ma30,
                                        macd=i15.macd, atr=i15.atr14,
-                                       adx=r15.adx, regime=r15.regime)
+                                       adx=r15.adx, regime=r15.regime,
+                                       bb_position=_bb_pos(i15, q.mark_price),
+                                       volume_ratio=i15.volume_ratio,
+                                       vwap=i15.vwap)
 
                 news_items = []
                 try: news_items = await self._news_registry.fetch_news(symbol, max_results=5)
@@ -235,7 +255,10 @@ class AutoTrader:
                     klines_1h=k_1h, klines_4h=k_4h, klines_1d=k_1d,
                     ind_1h=dict(rsi=ind_1h.rsi14, ma10=ind_1h.ma10, ma30=ind_1h.ma30,
                                macd=ind_1h.macd, atr=ind_1h.atr14,
-                               adx=regime.adx, regime=regime.regime, bb_position=0.5),
+                               adx=regime.adx, regime=regime.regime,
+                               bb_position=_bb_pos(ind_1h, q.mark_price),
+                               volume_ratio=ind_1h.volume_ratio,
+                               vwap=ind_1h.vwap),
                     ind_4h=dict(rsi=ind_4h_raw.rsi14) if ind_4h_raw else None,
                     ind_1d=dict(rsi=ind_1d_raw.rsi14) if ind_1d_raw else None,
                     ind_15m=ind_15m_raw,

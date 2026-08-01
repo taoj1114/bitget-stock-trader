@@ -145,6 +145,9 @@ class TechnicalIndicators:
     volume_ratio: float = 1.0        # 当前/20日均量
     volume_ma20: float = 0.0
 
+    # VWAP (当日成交量加权均价, 日内多空分界)
+    vwap: float = 0.0
+
     # 其他
     funding_rate: float = 0.0        # 当前资金费率
     change_pct: float = 0.0          # 24h涨跌幅
