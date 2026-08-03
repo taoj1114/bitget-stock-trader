@@ -486,7 +486,34 @@ class AutoTrader:
         return triggered
 
 
+def _setup_logging():
+    """日志: 控制台 + 文件轮转 (10MB × 5, 自动覆盖最旧)。"""
+    import logging.handlers
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # 控制台
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    # 文件轮转 (logs/auto_trader.log, 10MB, 5个备份)
+    try:
+        log_dir = os.path.join(os.path.dirname(__file__), "..", "data", "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            os.path.join(log_dir, "auto_trader.log"),
+            maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
+        )
+        file_handler.setFormatter(fmt)
+        root.addHandler(file_handler)
+    except Exception as e:
+        print(f"日志文件初始化失败(不影响运行): {e}")
+
+
 async def main():
+    _setup_logging()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
     args = sys.argv[1:]
     mode = "once"
