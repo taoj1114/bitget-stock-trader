@@ -176,7 +176,9 @@ class AINativeDecisionMaker:
             + lesson_str
             + "\n输出JSON:\n"
             '{"action":"BUY/SELL/HOLD","stop_loss":x,"take_profit":x,"reason":"..."}\n'
-            "HOLD是合法的。不确定就HOLD。\n"
+            "HOLD是合法的——但HOLD不是默认答案。\n"
+            "当趋势、动量、量能、大盘环境共振确认时, 应该果断入场抓住机会。\n"
+            "机会出现时犹豫不决、总是观望同样是错误。\n"
             "历史结果仅供参考——行情会反转, 必须以当前数据为准, 绝不因旧判断而固执。\n"
             "时段策略: regular(盘中)正常交易; pre_market盘前/post_market盘后/closed深夜流动性差,"
             "除非信号极强否则HOLD; weekend周末休市必HOLD。\n"
@@ -293,7 +295,10 @@ class AINativeDecisionMaker:
     async def review_and_learn(self, memory) -> tuple[list[str], list[str]]:
         """AI 读历史决策+结果 → (经验教训, 硬规则)。"""
         decisions = memory.recent_decisions(30)
-        if len(decisions) < 5:
+        # 只统计有结果(已平仓)的决策
+        decided = [d for d in decisions if d.get("outcome") is not None]
+        if len(decided) < 3:
+            # 无真实交易样本 → 不生成经验/规则 (避免从HOLD噪音学习)
             return [], []
         stats = memory.stats()
         lines = []
