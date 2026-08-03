@@ -52,6 +52,11 @@ def _holding_hours(pos) -> float:
     except Exception:
         return 0.0
 
+
+def _kline_dicts(klines) -> list[dict]:
+    """Kline dataclass → dict (供落库)。"""
+    return [k.__dict__ if hasattr(k, "__dict__") else k for k in klines]
+
 FULL_SCAN_INTERVAL = 600
 QUOTE_INTERVAL = 30
 SYMBOL_REFRESH_INTERVAL = 14400
@@ -68,6 +73,7 @@ class AutoTrader:
         self._symbol_source = BitgetSymbolSource()
 
         self._kline_store = KlineStore()
+        self._last_kline_prune = 0.0  # K线清理计时
         self._fund_store = FundStore()
         self._news_store = NewsSentimentStore()
         self._pipeline = FeaturePipeline(self._kline_store, self._fund_store, self._news_store)
@@ -148,6 +154,16 @@ class AutoTrader:
             await self._refresh_symbols()
             self._last_symbol_refresh = now
 
+        # 每日清理过期K线 (保留30天)
+        if now - self._last_kline_prune >= 86400:
+            try:
+                deleted = self._kline_store.prune(keep_days=30)
+                self._last_kline_prune = now
+                if deleted:
+                    logger.info("K线清理: 删除 %d 条过期数据", deleted)
+            except Exception as e:
+                logger.warning("K线清理失败: %s", e)
+
         if now - self._last_full_scan >= FULL_SCAN_INTERVAL:
             candidates = list(self._symbols)
             self._last_full_scan = now
@@ -177,6 +193,11 @@ class AutoTrader:
                     k_15m = await self._market.get_klines(pos.symbol, "15m", 500)
                     q = await self._market.get_quote(pos.symbol)
                     if not q or len(k_1h) < 30: continue
+                    # K线落库 (实时数据追加)
+                    try:
+                        self._kline_store.upsert_batch(pos.symbol, _kline_dicts(k_1h), "1H")
+                        self._kline_store.upsert_batch(pos.symbol, _kline_dicts(k_15m), "15m")
+                    except Exception: pass
                     ind = self._tech.calculate(k_1h)
                     reg = self._regime_detector.detect(k_1h)
                     k_4h = [Kline(**r) for r in agg.aggregate(k_1h, "4H")]
@@ -296,6 +317,11 @@ class AutoTrader:
                 k_15m = await self._market.get_klines(symbol, "15m", 500)
                 q = await self._market.get_quote(symbol)
                 if not q or len(k_1h) < 30: continue
+                # K线落库 (实时数据追加)
+                try:
+                    self._kline_store.upsert_batch(symbol, _kline_dicts(k_1h), "1H")
+                    self._kline_store.upsert_batch(symbol, _kline_dicts(k_15m), "15m")
+                except Exception: pass
                 ind_1h = self._tech.calculate(k_1h)
                 regime = self._regime_detector.detect(k_1h)
                 k_4h = [Kline(**r) for r in agg.aggregate(k_1h, "4H")]

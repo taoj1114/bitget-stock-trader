@@ -70,6 +70,14 @@ class KlineStore:
                     inserted += 1
         return inserted
 
+    def prune(self, keep_days: int = 30) -> int:
+        """清理过期 K线, 只保留最近 N 天。返回删除行数。"""
+        cutoff = int(time.time() * 1000) - keep_days * 86400 * 1000
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM klines WHERE timestamp < ?", (cutoff,))
+            return cur.rowcount
+
     # ── 读取 ──────────────────────────────────────────
 
     def get(self, symbol: str, interval: str = "1H", limit: int = 200) -> list[dict]:
