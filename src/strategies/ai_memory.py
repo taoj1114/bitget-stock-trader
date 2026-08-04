@@ -101,6 +101,15 @@ class AIMemory:
         """已平仓(有结果)的决策数 — 复盘触发基准。"""
         return sum(1 for d in self._data["decisions"] if d.get("outcome") is not None)
 
+    def get_review_base(self) -> int:
+        """持久化的复盘基准 (上次复盘时的已平仓数, 重启不重置)。"""
+        return int(self._data.get("review_base", self.count_closed()))
+
+    def set_review_base(self, count: int) -> None:
+        """记录复盘基准 (已平仓数), 持久化到磁盘。"""
+        self._data["review_base"] = int(count)
+        self._save()
+
     def close_decision(self, symbol: str, close_price: float, pnl: float,
                        close_reason: str = "", holding_hours: float = 0) -> None:
         """平仓时回填最近一次未平仓决策的结果。"""

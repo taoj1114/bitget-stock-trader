@@ -205,7 +205,7 @@ class AutoTrader:
         self._lessons = self._memory.get_lessons(5)
         self._rules = self._memory.get_rules(10)
         self._last_review = 0.0  # 复盘计时 (兼容保留)
-        self._last_review_count = self._memory.count_closed()  # 复盘基准: 当前已平仓数
+        self._last_review_count = self._memory.get_review_base()  # 复盘基准: 持久化, 重启不重置
         self._tech = TechnicalAnalyzer()
         self._regime_detector = MarketRegimeDetector()
 
@@ -559,6 +559,7 @@ class AutoTrader:
         closed_now = self._memory.count_closed()
         if closed_now >= 3 and closed_now - self._last_review_count >= 5:
             self._last_review_count = closed_now  # 先更新, 防止每轮空跑
+            self._memory.set_review_base(closed_now)  # 持久化, 重启不重置
             try:
                 lessons, rules = await self._ai_decider.review_and_learn(self._memory)
                 if lessons:
