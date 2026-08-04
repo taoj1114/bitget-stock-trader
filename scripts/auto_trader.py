@@ -59,7 +59,8 @@ def _kline_dicts(klines) -> list[dict]:
 
 FULL_SCAN_INTERVAL = 600
 QUOTE_INTERVAL = 30
-SYMBOL_REFRESH_INTERVAL = 14400
+SYMBOL_REFRESH_INTERVAL = 7200  # 品种池刷新: 2小时
+LOSS_COOLDOWN_HOURS = 24         # 亏损平仓后冷却: 24小时不进入品种池
 TOP_N_SYMBOLS = 25
 BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]
 
@@ -136,6 +137,33 @@ class AutoTrader:
         self._last_prices: dict[str, float] = {}
         self._last_full_scan = 0.0
         self._last_symbol_refresh = 0.0
+        # 亏损冷却: symbol → 冷却截止时间戳 (重启后从 ai_memory 恢复)
+        self._cooldown: dict[str, float] = self._load_cooldowns()
+
+    def _load_cooldowns(self) -> dict[str, float]:
+        """从 ai_memory 恢复亏损冷却 (最近24h内亏损平仓的品种)。"""
+        import datetime as _dt
+        cooldown = {}
+        try:
+            decisions = self._memory.recent_decisions(500)
+            now_ts = time.time()
+            for d in decisions:
+                if d.get("outcome") == "loss" and d.get("close_pnl", 0) < 0:
+                    try:
+                        t = _dt.datetime.strptime(d["time"], "%Y-%m-%d %H:%M:%S")
+                        t = t.replace(tzinfo=_dt.timezone.utc)
+                        close_ts = t.timestamp()
+                    except Exception:
+                        continue
+                    expiry = close_ts + LOSS_COOLDOWN_HOURS * 3600
+                    sym = d["symbol"]
+                    if expiry > now_ts and expiry > cooldown.get(sym, 0):
+                        cooldown[sym] = expiry
+            if cooldown:
+                logger.info("恢复亏损冷却: %s", {k: _dt.datetime.fromtimestamp(v, _dt.timezone.utc).strftime("%m-%d %H:%M") for k, v in cooldown.items()})
+        except Exception as e:
+            logger.warning("恢复冷却失败: %s", e)
+        return cooldown
 
     # ═══ 主循环 ═══════════════════════════════════
 
@@ -259,6 +287,10 @@ class AutoTrader:
                                    pos.symbol, pos.side, sig.reason[:60])
                         close_pnl = getattr(pos, 'unrealized_pnl', 0) or 0
                         await self._executor.close_position(pos.id, "AI_MANAGE_CLOSE")
+                        # 亏损平仓 → 冷却24h, 不进品种池
+                        if close_pnl < 0:
+                            self._cooldown[pos.symbol] = time.time() + LOSS_COOLDOWN_HOURS * 3600
+                            logger.info("%s 亏损平仓 $%.2f → 冷却 %dh", pos.symbol, close_pnl, LOSS_COOLDOWN_HOURS)
                         try:
                             self._memory.close_decision(
                                 pos.symbol, q.mark_price, close_pnl,
@@ -489,7 +521,13 @@ class AutoTrader:
 
             if len(rich) >= 15:
                 ranked = self._rank_symbols(list(rich.keys()), rich)
-                new_pool = ranked[:TOP_N_SYMBOLS]
+                # 过滤亏损冷却中的品种 (24h内亏损平仓)
+                now = time.time()
+                active = [s for s in ranked if self._cooldown.get(s, 0) <= now]
+                if len(active) < TOP_N_SYMBOLS // 2 and self._cooldown:
+                    logger.info("冷却品种过多(%d), 放宽过滤", len([s for s in ranked if self._cooldown.get(s, 0) > now]))
+                    active = ranked
+                new_pool = active[:TOP_N_SYMBOLS]
                 # 保留现有持仓品种（避免池子刷新把持仓踢掉）
                 positions = await self._executor.get_positions()
                 held = {p.symbol for p in positions}
@@ -497,6 +535,9 @@ class AutoTrader:
                     if h not in new_pool:
                         new_pool.append(h)
                 self._symbols = new_pool
+                cooling_now = [s for s in self._cooldown if self._cooldown[s] > now and s not in held]
+                if cooling_now:
+                    logger.info("品种池刷新 | 冷却中跳过: %s", cooling_now[:8])
                 logger.info("品种池动态刷新: %d 个 (来自全市场 %d)", len(new_pool), len(rich))
         except Exception as e:
             logger.error("刷新品种池失败: %s", e)
