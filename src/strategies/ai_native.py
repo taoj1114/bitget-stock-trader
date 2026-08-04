@@ -209,13 +209,25 @@ class AINativeDecisionMaker:
             "入场策略(先判断多空, 再选策略——多空不对称!):\n"
             "═══ 做多 (BUY) ═══\n"
             "  多1 趋势延续: 1H+5m同向上 + 回踩MA10/VWAP企稳(量缩)→买\n"
-            "  多2 突破追涨: 放量(量比>1.2)突破近2小时高点→买加速段(追强可接受)\n"
+            "  多2 突破追涨: 放量(量比>1.2)突破近2小时高点→买加速段\n"
+            "      ⚠️ 追涨前置否决(必须先检查, 任一触发就禁止追涨):\n"
+            "      - 当日已涨>8% → 只做回踩, 禁止追涨\n"
+            "      - 1H RSI>80 → 极度超买, 禁止追涨\n"
+            "      - 价格距近2小时高点<0.3% → 已贴顶, 无空间, 禁止追涨\n"
+            "      - 止损无法放在近2小时低点下方(结构位) → 禁止追涨\n"
+            "      → 追涨必须: 止损在结构位下 + 盈亏比≥1\n"
             "  多3 大盘共振: 大盘(SPY/QQQ)强 + 个股跟涨→顺势买\n"
             "  多4 禁止: 大盘弱(SPY下跌)时逆势抄底个股; 当日已涨>8%追高\n"
             "═══ 做空 (SELL) ═══\n"
             "  空1 反抽做空: 1H+5m同向下 + 反弹到VWAP/MA10/关键阻力位受阻→卖\n"
             "      (做空最优入场: 反弹到位, 不是追跌!)\n"
             "  空2 破位追跌: 放量跌破近2小时低点→卖加速段\n"
+            "      ⚠️ 追跌前置否决(任一触发就禁止):\n"
+            "      - 当日已跌>8% → 只做反抽, 禁止追跌\n"
+            "      - 1H RSI<20 → 极度超卖, 禁止追跌\n"
+            "      - 价格距近2小时低点<0.3% → 已贴底, 禁止追跌\n"
+            "      - 止损无法放在近2小时高点上方(结构位) → 禁止追跌\n"
+            "      → 追跌必须: 止损在结构位上 + 盈亏比≥1\n"
             "  空3 弱势共振: 大盘弱 + 个股跟跌→顺势卖\n"
             "  空4 注意: 暴跌后(RSI<25)不追空(超卖反弹极快); 尾盘(15:00-16:00 ET)做空谨慎(常拉升);\n"
             "      逼空风险——止损必须更紧或仓位更小\n"
@@ -456,6 +468,26 @@ class AINativeDecisionMaker:
             return None
         if not is_buy and (float(sl) <= entry or float(tp) >= entry):
             return None
+
+        # ── 代码级安全防线 (LLM可能不遵守prompt, 这里硬拦截) ──
+        sl_dist = abs(float(sl) - entry) / entry * 100
+        tp_dist = abs(float(tp) - entry) / entry * 100
+        # 1. 盈亏比必须 ≥1 (亏的比赚的多就拒绝)
+        if tp_dist < sl_dist:
+            logger.warning("拒绝 %s: 盈亏比 %.2f < 1 (SL=%.2f%% TP=%.2f%%)",
+                          inp.symbol, tp_dist / max(sl_dist, 1e-9), sl_dist, tp_dist)
+            return None
+        # 2. 当日极端涨跌 (>8%) 禁止追涨/追跌
+        if abs(inp.change_pct) > 8.0:
+            logger.warning("拒绝 %s: 当日 %+.1f%% 极端波动, 禁止追涨/追跌 (等回踩/反抽)",
+                          inp.symbol, inp.change_pct)
+            return None
+        # 3. 止损距离上限 (单笔风险控制, 防宽止损爆仓)
+        if sl_dist > 3.0:
+            logger.warning("拒绝 %s: 止损距离 %.2f%% 超限 (>3%%)",
+                          inp.symbol, sl_dist)
+            return None
+
         return Signal(
             strategy_id="ai_native", symbol=inp.symbol,
             action=action,
