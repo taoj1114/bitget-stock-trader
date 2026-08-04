@@ -107,6 +107,71 @@ def _holding_hours(pos) -> float:
         return 0.0
 
 
+def _trend_shape(klines, lookback: int = 24) -> str:
+    """走势形状分析 — 把最近K线轨迹压缩成文字 (AI 能读懂动态走势)。
+
+    提取: 形态(单边/反转/横盘) + 动量(加速/衰竭) + 最后一根K线特征。
+    """
+    try:
+        if not klines or len(klines) < 6:
+            return ""
+        ks = list(klines)[-lookback:]
+        closes = [float(k.close) for k in ks]
+        opens = [float(k.open) for k in ks]
+        highs = [float(k.high) for k in ks]
+        lows = [float(k.low) for k in ks]
+        c0 = closes[0]
+        c1 = closes[-1]
+
+        # 1. 整体形态
+        total_chg = (c1 / c0 - 1) * 100 if c0 else 0
+        # 前段 vs 后段 (判断加速/减速/反转)
+        mid = len(ks) // 2
+        first_chg = (closes[mid] / c0 - 1) * 100 if c0 else 0
+        last_chg = (c1 / closes[mid] - 1) * 100 if closes[mid] else 0
+        if abs(total_chg) < 0.3:
+            shape = "横盘震荡"
+        elif last_chg * total_chg < 0 and abs(last_chg) > 0.3:
+            shape = "反转" + ("回落" if total_chg > 0 else "反弹")
+        elif abs(last_chg) > abs(first_chg) * 1.3 and abs(first_chg) > 0.1:
+            shape = "加速" + ("上涨" if total_chg > 0 else "下跌")
+        elif abs(last_chg) < abs(first_chg) * 0.5 and abs(first_chg) > 0.3:
+            shape = "动量衰竭" + ("(涨势趋缓)" if total_chg > 0 else "(跌势趋缓)")
+        else:
+            shape = "单边" + ("上涨" if total_chg > 0 else "下跌")
+
+        # 2. 最近3根K线组合 (最后一段微观走势)
+        tail = ks[-3:]
+        tail_txt = []
+        for k in tail:
+            o, c, h, l = float(k.open), float(k.close), float(k.high), float(k.low)
+            body = abs(c - o)
+            rng = max(h - l, 1e-9)
+            if c > o:
+                tail_txt.append("阳")
+            elif c < o:
+                tail_txt.append("阴")
+            else:
+                tail_txt.append("十")
+            # 影线特征
+            upper = (h - max(o, c)) / rng
+            lower = (min(o, c) - l) / rng
+            if upper > 0.6:
+                tail_txt[-1] += "长上影"
+            elif lower > 0.6:
+                tail_txt[-1] += "长下影"
+        tail_str = "→".join(tail_txt)
+
+        # 3. 波动区间
+        hi, lo = max(highs), min(lows)
+        rng_pct = (hi - lo) / c1 * 100 if c1 else 0
+
+        return (f"走势: {shape} 区间累计{total_chg:+.1f}% (前段{first_chg:+.1f}%/后段{last_chg:+.1f}%) "
+                f"近3根K线[{tail_str}] 波动{len(ks)*5}分钟范围{rng_pct:.1f}%\n")
+    except Exception:
+        return ""
+
+
 def _kline_dicts(klines) -> list[dict]:
     """Kline dataclass → dict (供落库)。"""
     return [k.__dict__ if hasattr(k, "__dict__") else k for k in klines]
@@ -359,6 +424,8 @@ class AutoTrader:
                         book = await self._market.get_order_book(pos.symbol, limit=10)
                         ob_str = _pressure_str(book)
                     except Exception: pass
+                    # 走势形状分析 (5m K线轨迹)
+                    trend_str = _trend_shape(k_5m)
                     ai_inp = AIInput(
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                         klines_1h=k_1h, klines_4h=[], klines_1d=[],
@@ -371,6 +438,7 @@ class AutoTrader:
                         ind_4h=None, ind_1d=None,
                         ind_5m=ind5,
                         orderbook=ob_str,
+                        trend_shape=trend_str,
                         news=news_titles, news_summary="; ".join(news_titles[:3]),
                         bench=bench, open_interest=q.open_interest,
                         funding_rate=getattr(q, 'funding_rate', 0) or 0,
@@ -504,6 +572,8 @@ class AutoTrader:
                     book = await self._market.get_order_book(symbol, limit=10)
                     ob_str = _pressure_str(book)
                 except Exception: pass
+                # 走势形状分析 (5m K线轨迹)
+                trend_str = _trend_shape(k_5m)
 
                 ai_inp = AIInput(
                     symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
@@ -517,6 +587,7 @@ class AutoTrader:
                     ind_4h=None, ind_1d=None,
                     ind_5m=ind_5m_raw,
                     orderbook=ob_str,
+                    trend_shape=trend_str,
                     news=news_titles, news_summary="; ".join(news_titles[:3]),
                     bench=bench, open_interest=q.open_interest,
                     funding_rate=getattr(q, 'funding_rate', 0) or 0,
