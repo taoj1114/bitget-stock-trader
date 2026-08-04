@@ -58,7 +58,8 @@ def _kline_dicts(klines) -> list[dict]:
     return [k.__dict__ if hasattr(k, "__dict__") else k for k in klines]
 
 FULL_SCAN_INTERVAL = 600
-QUOTE_INTERVAL = 30
+QUOTE_INTERVAL = 30        # 行情轮询
+SCAN_INTERVAL = 300        # 管仓/开仓扫描: 5分钟 (日内止盈止损需要更频繁捕捉)
 SYMBOL_REFRESH_INTERVAL = 7200  # 品种池刷新: 2小时
 LOSS_COOLDOWN_HOURS = 24         # 亏损平仓后冷却: 24小时不进入品种池
 TOP_N_SYMBOLS = 25
@@ -584,7 +585,7 @@ async def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
     args = sys.argv[1:]
     mode = "once"
-    interval = QUOTE_INTERVAL
+    interval = SCAN_INTERVAL
     for i, arg in enumerate(args):
         if arg == "--live": mode = "live"
         elif arg == "--interval" and i + 1 < len(args): interval = int(args[i + 1])
