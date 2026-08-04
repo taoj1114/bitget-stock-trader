@@ -298,10 +298,10 @@ class AutoTrader:
         if hasattr(self._executor, "_on_position_closed"):
             self._executor._on_position_closed = self._on_exchange_close
 
-    def _on_exchange_close(self, symbol: str, pnl: float, reason: str):
+    def _on_exchange_close(self, symbol: str, pnl: float, reason: str, close_price: float = 0):
         """交易所托管 SL/TP 触发平仓 → 回填 ai_memory。"""
         try:
-            self._memory.close_decision(symbol, 0, pnl, close_reason=reason)
+            self._memory.close_decision(symbol, close_price, pnl, close_reason=reason)
             if pnl < 0:
                 self._cooldown[symbol] = time.time() + LOSS_COOLDOWN_HOURS * 3600
                 logger.info("%s 托管止损 $%.2f → 冷却 %dh", symbol, pnl, LOSS_COOLDOWN_HOURS)

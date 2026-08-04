@@ -258,7 +258,8 @@ class RealExecutor:
                     # 通知 AI 记忆层 (复盘学习需要看到止损结果)
                     if self._on_position_closed:
                         try:
-                            self._on_position_closed(stale.symbol, pnl, "EXCHANGE_SLTP")
+                            self._on_position_closed(stale.symbol, pnl, "EXCHANGE_SLTP",
+                                                     stale.mark_price)
                         except Exception:
                             pass
                     # 安全系统: 连续亏损计数 (托管平仓也算)

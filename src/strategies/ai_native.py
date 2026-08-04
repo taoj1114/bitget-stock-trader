@@ -265,6 +265,12 @@ class AINativeDecisionMaker:
                          for h in decided]
                 hist_str = "\n该股历史交易结果(仅供参考, 勿固执):\n" + "\n".join(lines) + "\n"
 
+        # 复盘经验 (管仓也应参考历史教训)
+        lesson_str = ""
+        if inp.lessons:
+            lesson_str = "\n历史经验(复盘总结, 仅供参考):\n" + "\n".join(
+                f"  • {l}" for l in inp.lessons) + "\n"
+
         prompt = (
             f"你是日内交易持仓管理AI。管理 {inp.symbol} 的持仓, 目标是日内最大获利 + 最小回撤。\n"
             f"时段: {inp.session} | ${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n"
@@ -282,6 +288,7 @@ class AINativeDecisionMaker:
             + f"新闻 {inp.news_summary or '无'}\n"
             + (inp.orderbook or "")
             + hist_str
+            + lesson_str
             + "\n日内持仓管理原则(快进快出):\n"
             "1. 小目标落袋: 浮盈达0.5%-1.5%即果断止盈离场(日内吃波段, 不贪大, 到目标就走)\n"
             "2. 时间止损: 持仓超3小时未到目标 → 收紧止损至保本并准备离场(日内不留隔夜)\n"
