@@ -58,7 +58,8 @@ class AIInput:
     open_interest: float
     funding_rate: float
     volume_24h: float = 0.0
-    ind_15m: dict | None = None  # 日内主指标
+    ind_15m: dict | None = None  # 日内主指标 (管仓用 15m)
+    ind_5m: dict | None = None   # 开仓用 5m (更细的日内信号)
     session: str = "regular"  # pre_market / regular / post_market / weekend / holiday
     lessons: list[str] = field(default_factory=list)  # 复盘经验
     rules: list[str] = field(default_factory=list)    # 硬规则 (禁止项)
@@ -158,10 +159,14 @@ class AINativeDecisionMaker:
             f"分析 {inp.symbol}，给出交易决策。\n"
             f"时段: {inp.session}\n"
             f"${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n"
+            + (f"5m RSI={inp.ind_5m.get('rsi',50):.0f} MA10={inp.ind_5m.get('ma10',0):.2f} MA30={inp.ind_5m.get('ma30',0):.2f} "
+               f"MACD={inp.ind_5m.get('macd',0):.4f} ATR={inp.ind_5m.get('atr',0):.2f} "
+               f"ADX={inp.ind_5m.get('adx',0):.0f} {inp.ind_5m.get('regime','')} "
+               f"VWAP={inp.ind_5m.get('vwap',0):.2f} 量比={inp.ind_5m.get('volume_ratio',1):.1f} BB={inp.ind_5m.get('bb_position',0.5):.2f} [日内]\n" if inp.ind_5m else "")
             + (f"15m RSI={inp.ind_15m.get('rsi',50):.0f} MA10={inp.ind_15m.get('ma10',0):.2f} MA30={inp.ind_15m.get('ma30',0):.2f} "
                f"MACD={inp.ind_15m.get('macd',0):.4f} ATR={inp.ind_15m.get('atr',0):.2f} "
                f"ADX={inp.ind_15m.get('adx',0):.0f} {inp.ind_15m.get('regime','')} "
-               f"VWAP={inp.ind_15m.get('vwap',0):.2f} 量比={inp.ind_15m.get('volume_ratio',1):.1f} BB={inp.ind_15m.get('bb_position',0.5):.2f} [日内]\n" if inp.ind_15m else "")
+               f"VWAP={inp.ind_15m.get('vwap',0):.2f} 量比={inp.ind_15m.get('volume_ratio',1):.1f} BB={inp.ind_15m.get('bb_position',0.5):.2f}\n" if inp.ind_15m else "")
             + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} MA10={inp.ind_1h.get('ma10',0):.1f} MA30={inp.ind_1h.get('ma30',0):.1f} "
             f"MACD={inp.ind_1h.get('macd',0):.3f} ATR={inp.ind_1h.get('atr',0):.2f} "
             f"ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')} "

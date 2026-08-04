@@ -350,13 +350,13 @@ class AutoTrader:
             seen.add(symbol)
             try:
                 k_1h = await self._market.get_klines(symbol, "1H", 500)
-                k_15m = await self._market.get_klines(symbol, "15m", 500)
+                k_5m = await self._market.get_klines(symbol, "5m", 500)
                 q = await self._market.get_quote(symbol)
                 if not q or len(k_1h) < 30: continue
                 # K线落库 (实时数据追加)
                 try:
                     self._kline_store.upsert_batch(symbol, _kline_dicts(k_1h), "1H")
-                    self._kline_store.upsert_batch(symbol, _kline_dicts(k_15m), "15m")
+                    self._kline_store.upsert_batch(symbol, _kline_dicts(k_5m), "5m")
                 except Exception: pass
                 ind_1h = self._tech.calculate(k_1h)
                 regime = self._regime_detector.detect(k_1h)
@@ -364,16 +364,16 @@ class AutoTrader:
                 k_1d = [Kline(**r) for r in agg.aggregate(k_1h, "1D")]
                 ind_4h_raw = self._tech.calculate(k_4h) if len(k_4h) >= 5 else None
                 ind_1d_raw = self._tech.calculate(k_1d) if len(k_1d) >= 3 else None
-                ind_15m_raw = None
-                if len(k_15m) >= 30:
-                    i15 = self._tech.calculate(k_15m)
-                    r15 = self._regime_detector.detect(k_15m)
-                    ind_15m_raw = dict(rsi=i15.rsi14, ma10=i15.ma10, ma30=i15.ma30,
-                                       macd=i15.macd, atr=i15.atr14,
-                                       adx=r15.adx, regime=r15.regime,
-                                       bb_position=_bb_pos(i15, q.mark_price),
-                                       volume_ratio=i15.volume_ratio,
-                                       vwap=i15.vwap)
+                ind_5m_raw = None
+                if len(k_5m) >= 30:
+                    i5 = self._tech.calculate(k_5m)
+                    r5 = self._regime_detector.detect(k_5m)
+                    ind_5m_raw = dict(rsi=i5.rsi14, ma10=i5.ma10, ma30=i5.ma30,
+                                      macd=i5.macd, atr=i5.atr14,
+                                      adx=r5.adx, regime=r5.regime,
+                                      bb_position=_bb_pos(i5, q.mark_price),
+                                      volume_ratio=i5.volume_ratio,
+                                      vwap=i5.vwap)
 
                 # 新闻降级: 仅异常波动(±5%)时注入, 否则空 (避免噪声)
                 news_items = []
@@ -398,7 +398,7 @@ class AutoTrader:
                                vwap=ind_1h.vwap),
                     ind_4h=dict(rsi=ind_4h_raw.rsi14) if ind_4h_raw else None,
                     ind_1d=dict(rsi=ind_1d_raw.rsi14) if ind_1d_raw else None,
-                    ind_15m=ind_15m_raw,
+                    ind_5m=ind_5m_raw,
                     news=news_titles, news_summary="; ".join(news_titles[:3]),
                     bench=bench, open_interest=q.open_interest,
                     funding_rate=getattr(q, 'funding_rate', 0) or 0,
