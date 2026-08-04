@@ -110,7 +110,7 @@ def _holding_hours(pos) -> float:
 def _trend_shape(klines, lookback: int = 24) -> str:
     """走势形状分析 — 把最近K线轨迹压缩成文字 (AI 能读懂动态走势)。
 
-    提取: 形态(单边/反转/横盘) + 动量(加速/衰竭) + 最后一根K线特征。
+    提取: 形态(单边/反转/横盘) + 动量(加速/衰竭) + 最后一根K线特征 + 关键位。
     """
     try:
         if not klines or len(klines) < 6:
@@ -166,8 +166,15 @@ def _trend_shape(klines, lookback: int = 24) -> str:
         hi, lo = max(highs), min(lows)
         rng_pct = (hi - lo) / c1 * 100 if c1 else 0
 
+        # 4. 关键位 (近2小时高低点, 止损止盈锚点)
+        key_hi = round(hi, 2)
+        key_lo = round(lo, 2)
+        dist_hi = (key_hi / c1 - 1) * 100 if c1 else 0
+        dist_lo = (c1 / key_lo - 1) * 100 if key_lo else 0
+
         return (f"走势: {shape} 区间累计{total_chg:+.1f}% (前段{first_chg:+.1f}%/后段{last_chg:+.1f}%) "
-                f"近3根K线[{tail_str}] 波动{len(ks)*5}分钟范围{rng_pct:.1f}%\n")
+                f"近3根K线[{tail_str}] 波动范围{rng_pct:.1f}% "
+                f"关键位: 高{key_hi}(距{abs(dist_hi):.1f}%) 低{key_lo}(距{abs(dist_lo):.1f}%)\n")
     except Exception:
         return ""
 
