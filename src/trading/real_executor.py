@@ -1,6 +1,6 @@
 """实盘执行器 — 对接 Bitget 真实下单
 
-接口与 PaperExecutor 一致，可在配置中切换 paper/real 模式。
+接口与 Executor 规范一致。
 """
 
 import logging, os

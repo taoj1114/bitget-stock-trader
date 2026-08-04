@@ -140,14 +140,14 @@ class SignalStrategy(ABC):
 class Executor(ABC):
     """交易执行器。
 
-    PaperExecutor / RealExecutor 实现此接口。
+    RealExecutor 实现此接口。
     上层代码不关心具体实现。
     """
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """执行器名称 (paper / real)"""
+        """执行器名称 (real)"""
         ...
 
     @abstractmethod

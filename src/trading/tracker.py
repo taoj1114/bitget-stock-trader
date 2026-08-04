@@ -12,7 +12,7 @@ from typing import Optional
 class Tracker:
     """交易记录 SQLite 存储。线程安全（写操作加锁）。"""
 
-    def __init__(self, db_path: str = "data/trades.db", mode: str = "paper"):
+    def __init__(self, db_path: str = "data/trades.db", mode: str = "real"):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._lock = threading.Lock()
         self._mode = mode
@@ -38,7 +38,7 @@ class Tracker:
                 market_regime TEXT DEFAULT '',
                 signal_score REAL DEFAULT 0.0,
                 position_id  TEXT DEFAULT '',
-                mode        TEXT DEFAULT 'paper'
+                mode        TEXT DEFAULT 'real'
             )
         """)
         self._conn.execute("""

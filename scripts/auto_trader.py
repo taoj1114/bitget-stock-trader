@@ -15,9 +15,7 @@ from src.datasources.bitget.market import BitgetMarketSource
 from src.datasources.bitget.symbols import BitgetSymbolSource
 from src.analyzers.technical import TechnicalAnalyzer
 from src.analyzers.market_regime import MarketRegimeDetector
-from src.trading.paper_executor import PaperExecutor
 from src.trading.safety import SafetySystem
-from src.trading.slippage import SlippageModel
 from src.storage.kline_store import KlineStore
 from src.storage.fund_store import FundStore
 from src.storage.news_sentiment_store import NewsSentimentStore
@@ -246,18 +244,16 @@ class AutoTrader:
         self._pipeline = FeaturePipeline(self._kline_store, self._fund_store, self._news_store)
 
         safety = SafetySystem(config.safety)
-        slippage = SlippageModel()
         mode = config.mode
-        if mode == "real":
-            from src.trading.real_executor import RealExecutor
-            self._executor = RealExecutor(safety=safety)
-            if not self._executor.ready:
-                logger.warning("Bitget API 未配置，降级为纸盘")
-                self._executor = PaperExecutor(initial_capital=10000, safety=safety, slippage=slippage)
-                mode = "paper"
-        else:
-            self._executor = PaperExecutor(initial_capital=10000, safety=safety, slippage=slippage)
-        logger.info("执行器: %s", mode.upper())
+        if mode != "real":
+            logger.warning("配置 mode=%s, 系统仅支持 real (实盘)", mode)
+            mode = "real"
+        from src.trading.real_executor import RealExecutor
+        self._executor = RealExecutor(safety=safety)
+        if not self._executor.ready:
+            raise RuntimeError(
+                "Bitget API 未配置 — 本系统只支持实盘交易, 请配置 API 密钥后重启")
+        logger.info("执行器: REAL")
 
         # AI 决策器: 从 config.yaml ai_provider 段读取 (可自选供应商/模型)
         ds_cfg = config.ai_provider_cfg()
@@ -326,7 +322,6 @@ class AutoTrader:
     def _account_status_str(self) -> str:
         """账户状态提示 — 平衡防守过度 (仅当亏损较大时提醒)。"""
         try:
-            # RealExecutor._equity 是属性, PaperExecutor 用 get_equity
             eq = getattr(self._executor, "_equity", 0)
             if isinstance(eq, (int, float)) and eq > 0:
                 equity = float(eq)

@@ -47,7 +47,7 @@ class ApiConfig(BaseModel):
 
 class AppConfig(BaseModel):
     """应用配置 schema"""
-    mode: str = "paper"
+    mode: str = "real"
     symbols: list[str] = Field(default_factory=list)
     datasources: DatasourcesConfig = Field(default_factory=DatasourcesConfig)
     news_sources: NewsSourcesConfig = Field(default_factory=NewsSourcesConfig)

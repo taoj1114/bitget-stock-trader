@@ -98,7 +98,7 @@ class Config:
 
     @property
     def mode(self) -> str:
-        return self.get("mode", "paper")
+        return self.get("mode", "real")
 
     @property
     def symbols(self) -> list[str]:
@@ -140,10 +140,6 @@ class Config:
     @property
     def cache(self) -> dict:
         return self.get("cache", {})
-
-    @property
-    def slippage(self) -> dict:
-        return self.get("slippage", {})
 
     @property
     def cold_start(self) -> dict:
