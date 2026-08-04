@@ -5,8 +5,7 @@
 模式: --live 持续运行 / --once 单次扫描
 """
 
-import asyncio, json, logging, os, sys, time
-from datetime import datetime, timezone
+import asyncio, logging, os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -17,10 +16,6 @@ from src.analyzers.technical import TechnicalAnalyzer
 from src.analyzers.market_regime import MarketRegimeDetector
 from src.trading.safety import SafetySystem
 from src.storage.kline_store import KlineStore
-from src.storage.fund_store import FundStore
-from src.storage.news_sentiment_store import NewsSentimentStore
-from src.features.pipeline import FeaturePipeline
-from src.core.types import Kline  # noqa: F401 (类型注解)
 from src.strategies.ai_native import AINativeDecisionMaker, AIInput, get_us_session
 
 logger = logging.getLogger("autotrader")
@@ -115,7 +110,6 @@ def _trend_shape(klines, lookback: int = 24) -> str:
             return ""
         ks = list(klines)[-lookback:]
         closes = [float(k.close) for k in ks]
-        opens = [float(k.open) for k in ks]
         highs = [float(k.high) for k in ks]
         lows = [float(k.low) for k in ks]
         c0 = closes[0]
@@ -239,9 +233,6 @@ class AutoTrader:
 
         self._kline_store = KlineStore()
         self._last_kline_prune = 0.0  # K线清理计时
-        self._fund_store = FundStore()
-        self._news_store = NewsSentimentStore()
-        self._pipeline = FeaturePipeline(self._kline_store, self._fund_store, self._news_store)
 
         safety = SafetySystem(config.safety)
         mode = config.mode

@@ -13,13 +13,8 @@ class BitgetConfig(BaseModel):
     rate_limit: int = 20
 
 
-class EastmoneyConfig(BaseModel):
-    mode: str = "auto"  # auto | direct | proxy
-
-
 class DatasourcesConfig(BaseModel):
     bitget: BitgetConfig = Field(default_factory=BitgetConfig)
-    eastmoney: EastmoneyConfig = Field(default_factory=EastmoneyConfig)
 
 
 class SearXNGConfig(BaseModel):

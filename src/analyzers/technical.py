@@ -1,7 +1,6 @@
 """技术指标计算器 — 纯函数式，输入 Kline[] 输出 TechnicalIndicators"""
 
 import math
-from typing import Optional
 
 from src.core.types import Kline, TechnicalIndicators
 
@@ -34,7 +33,6 @@ class TechnicalAnalyzer:
         ind.ma20 = _sma(closes, 20)
         ind.ma30 = _sma(closes, min(30, n))
         ind.ma60 = _sma(closes, min(60, n))
-        ma30_val = ind.ma30
 
         # MA10/MA30 前一周期（金叉检测）
         if n >= 32:

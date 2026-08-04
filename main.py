@@ -164,31 +164,28 @@ async def cmd_news(config, symbol: str):
         base_url=config.searxng_base_url,
         timeout=config.searxng_timeout,
     ))
-    try:
-        news_items = await registry.fetch_news(symbol, max_results=config.searxng_max_results, merge_all=True)
+    news_items = await registry.fetch_news(symbol, max_results=config.searxng_max_results, merge_all=True)
 
-        # 情绪分析
-        sentiment = SentimentAnalyzer.score(news_items)
+    # 情绪分析
+    sentiment = SentimentAnalyzer.score(news_items)
 
-        result = {
-            "symbol": symbol,
-            "query": f"{symbol} stock",
-            "news_count": len(news_items),
-            "sentiment": sentiment,
-            "news": [
-                {
-                    "title": item.title,
-                    "snippet": item.snippet[:300] if item.snippet else "",
-                    "url": item.url,
-                    "source": item.source,
-                    "published_at": item.published_at,
-                }
-                for item in news_items
-            ],
-        }
-        print(_json_dump(result))
-    finally:
-        await src.close()
+    result = {
+        "symbol": symbol,
+        "query": f"{symbol} stock",
+        "news_count": len(news_items),
+        "sentiment": sentiment,
+        "news": [
+            {
+                "title": item.title,
+                "snippet": item.snippet[:300] if item.snippet else "",
+                "url": item.url,
+                "source": item.source,
+                "published_at": item.published_at,
+            }
+            for item in news_items
+        ],
+    }
+    print(_json_dump(result))
 
 
 async def cmd_analyze(config, symbol: str):

@@ -11,7 +11,6 @@ API:
 """
 
 import logging
-from typing import Optional
 
 import httpx
 import xml.etree.ElementTree as ET

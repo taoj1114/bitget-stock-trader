@@ -1,7 +1,6 @@
 """标准化数据模型 — 所有模块间的数据传输对象 (DTO)"""
 
 from dataclasses import dataclass, field
-from decimal import Decimal
 from typing import Any, Optional
 from datetime import datetime
 

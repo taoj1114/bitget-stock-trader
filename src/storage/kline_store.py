@@ -5,11 +5,9 @@
 
 import sqlite3
 import time
-from typing import Optional
 
-import pandas as pd
 
-from src.core.sanitize import clean_float, clean_dict, validate_kline
+from src.core.sanitize import validate_kline
 
 
 class KlineStore:

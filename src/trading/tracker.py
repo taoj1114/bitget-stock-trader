@@ -6,7 +6,6 @@
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Optional
 
 
 class Tracker:

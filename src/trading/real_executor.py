@@ -4,7 +4,6 @@
 """
 
 import logging, os
-from datetime import datetime, timezone
 from typing import Optional
 
 from src.core.types import Signal, Position, OrderResult, AccountBalance
@@ -126,9 +125,7 @@ class RealExecutor:
 
         if resp.get("code") == "00000":
             logger.info("✅ 真实开仓: %s %s qty=%.1f", signal.symbol, side, quantity)
-            order_id = resp.get("data", {}).get("orderId", "")
             pos_id = f"real_{signal.symbol}"  # 统一 id = real_{symbol}
-
             # 设置止盈止损
             hold_side = "long" if side == "buy" else "short"
             if signal.stop_loss > 0:
@@ -255,14 +252,6 @@ class RealExecutor:
                 # 记录被 Bitget 托管 SL/TP 触发平掉的仓位 (本地 close_position 未调用)
                 try:
                     pnl = getattr(stale, "unrealized_pnl", 0) or 0
-                    if getattr(stale, "opened_at", None):
-                        from datetime import datetime, timezone
-                        opened = stale.opened_at
-                        if opened.tzinfo is None:
-                            opened = opened.replace(tzinfo=timezone.utc)
-                        hours = round((datetime.now(timezone.utc) - opened).total_seconds() / 3600, 1)
-                    else:
-                        hours = 0
                     self._tracker.record_close(
                         stale, stale.mark_price, pnl, "EXCHANGE_SLTP",
                         stale.strategy_id, funding_cost=0)

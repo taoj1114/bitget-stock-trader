@@ -9,7 +9,6 @@
 """
 
 import logging
-from typing import Optional
 
 from src.core.types import NewsItem
 from src.datasources.base import BaseNewsSource
