@@ -221,8 +221,9 @@ class AINativeDecisionMaker:
             "     等回踩企稳(5m顺新趋势回踩MA10/VWAP)再做第二波, 这是最安全入场点\n"
             "  3. 任何反转入场都必须: 止损放关键位外侧+ATR缓冲(距离近风险可控) + 盈亏比≥1\n"
             "历史结果仅供参考——行情会反转, 必须以当前数据为准, 绝不因旧判断而固执。\n"
-            "时段策略: regular(盘中)正常交易; pre_market盘前/post_market盘后/closed深夜流动性差,"
-            "除非信号极强否则HOLD; weekend周末休市必HOLD。\n"
+            "时段策略: regular(盘中)正常交易; pre_market盘前/post_market盘后/closed深夜\n"
+            "          也可以正常开仓——只需注意流动性价差较大时止损放宽一档;\n"
+            "          weekend周末休市必HOLD。\n"
             "日内交易原则(快进快出为核心):\n"
             "  1. 目标止盈: 0.5%-1.5% 的小目标, 到目标果断离场, 不贪大(日内吃波段, 不赌趋势)\n"
             "  2. 止损: 设在结构位(前低/前高/关键位)下方+0.5×ATR缓冲, 距离约0.5%-1%;\n"
@@ -398,13 +399,12 @@ class AINativeDecisionMaker:
             + "\n".join(lines) + "\n\n"
             + "统计:\n" + stats_str + "\n\n"
             "输出JSON对象:\n"
-            '{"lessons": ["经验1","经验2","经验3"], "rules": ["禁止项1","禁止项2"]}\n'
-            "lessons: 3-5条可操作经验 (如'RSI>70且动量衰竭时追多易亏','盘后胜率低'), 每条≤60字中文\n"
-            "rules: 1-3条硬规则, 必须是否定句/禁止项, 针对反复出现的亏损模式\n"
-            "       ⚠️ 关键: 规则必须是条件性/情境性的, 禁止绝对化禁止项!\n"
-            "       错误示范(绝对化): 'RSI>75禁止开仓' → 会误杀所有强势趋势股\n"
-            "       正确示范(条件化): 'RSI>75且价格远离MA30时禁止追多' → 只禁追高, 不禁顺势\n"
-            "       (如'ADX<20时禁止开仓','盘后禁止新开仓'), 每条≤50字中文"
+            '{"lessons": ["经验1","经验2","经验3"]}\n'
+            "lessons: 3-5条可操作经验, 每条≤60字中文\n"
+            "注意: 只输出经验教训(参考性质), 不要输出任何'禁止'类规则——\n"
+            "      交易决策完全由主AI自由判断, 复盘经验只是提供视角参考。\n"
+            "      经验要具体描述'什么情况下容易发生什么', 而非下禁令。\n"
+            "      如'盘前流动性较差时追涨容易被扫' 而非 '盘前禁止开仓'。\n"
         )
         raw = await self._call(
             system="你是交易复盘员，只输出JSON对象。",
@@ -414,15 +414,12 @@ class AINativeDecisionMaker:
         parsed = self._parse_json(raw)
         if isinstance(parsed, dict):
             lessons = [str(x)[:80] for x in parsed.get("lessons", [])][:6]
-            rules = [str(x)[:60] for x in parsed.get("rules", [])][:4]
-            # 去重: rules 若与 lessons 内容重叠则剔除
-            rules = [r for r in rules if not any(r[:10] in l or l[:10] in r for l in lessons)]
+            # AI 独揽决策: 不生成硬规则 (只保留经验参考)
+            rules = []
             if lessons:
-                logger.info("AI 复盘: %d 条经验, %d 条硬规则", len(lessons), len(rules))
+                logger.info("AI 复盘: %d 条经验 (硬规则已停用)", len(lessons))
                 for l in lessons:
                     logger.info("  • %s", l)
-                for r in rules:
-                    logger.info("  ⛔ %s", r)
                 return lessons, rules
         logger.warning("复盘解析失败: %s", str(raw)[:100])
         return [], []
