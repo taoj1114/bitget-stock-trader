@@ -39,6 +39,60 @@ def _bb_pos(ind, price: float) -> float:
         return 0.5
 
 
+def _orderbook_pressure(book) -> dict:
+    """盘口压力分析 (实时微观数据)。
+
+    Returns:
+        {pressure: 买卖压力比(买量/卖量), spread: 价差, spread_pct: 价差%,
+         big_bid: 大买单(价,量), big_ask: 大卖单(价,量)}
+    """
+    try:
+        if not book or not book.bids or not book.asks:
+            return {}
+        # 前10档买卖量总和
+        bid_vol = sum(lvl.size for lvl in book.bids[:10])
+        ask_vol = sum(lvl.size for lvl in book.asks[:10])
+        pressure = round(bid_vol / ask_vol, 2) if ask_vol > 0 else 1.0
+        best_bid = book.bids[0].price
+        best_ask = book.asks[0].price
+        spread = round(best_ask - best_bid, 4)
+        mid = (best_bid + best_ask) / 2
+        spread_pct = round(spread / mid * 100, 3) if mid > 0 else 0
+        # 大单: 某档挂单量 > 平均3倍
+        avg_vol = (bid_vol + ask_vol) / max(len(book.bids[:10]) + len(book.asks[:10]), 1)
+        big_bid = None
+        big_ask = None
+        if avg_vol > 0:
+            for lvl in book.bids[:10]:
+                if lvl.size > avg_vol * 3:
+                    big_bid = (round(lvl.price, 2), round(lvl.size, 2))
+                    break
+            for lvl in book.asks[:10]:
+                if lvl.size > avg_vol * 3:
+                    big_ask = (round(lvl.price, 2), round(lvl.size, 2))
+                    break
+        return {
+            "pressure": pressure, "spread": spread, "spread_pct": spread_pct,
+            "big_bid": big_bid, "big_ask": big_ask,
+        }
+    except Exception:
+        return {}
+
+
+def _pressure_str(book) -> str:
+    """盘口压力 → prompt 文本。"""
+    p = _orderbook_pressure(book)
+    if not p:
+        return ""
+    parts = [f"盘口压力比={p['pressure']} (买量/卖量, >1买压强 <1卖压强)",
+             f"价差=${p['spread']:.4f} ({p['spread_pct']:.3f}%)"]
+    if p.get("big_bid"):
+        parts.append(f"大买单@{p['big_bid'][0]} x{p['big_bid'][1]}")
+    if p.get("big_ask"):
+        parts.append(f"大卖单@{p['big_ask'][0]} x{p['big_ask'][1]}")
+    return " | ".join(parts) + "\n"
+
+
 def _holding_hours(pos) -> float:
     """持仓时长(小时)。"""
     try:
@@ -287,6 +341,12 @@ class AutoTrader:
                             news_items = await self._news_registry.fetch_news(pos.symbol, max_results=5)
                         except Exception: pass
                         news_titles = [item.title for item in news_items[:5]]
+                    # 盘口实时压力 (orderbook 前10档)
+                    ob_str = ""
+                    try:
+                        book = await self._market.get_order_book(pos.symbol, limit=10)
+                        ob_str = _pressure_str(book)
+                    except Exception: pass
                     ai_inp = AIInput(
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                         klines_1h=k_1h, klines_4h=[], klines_1d=[],
@@ -298,6 +358,7 @@ class AutoTrader:
                                    vwap=ind.vwap),
                         ind_4h=None, ind_1d=None,
                         ind_5m=ind5,
+                        orderbook=ob_str,
                         news=news_titles, news_summary="; ".join(news_titles[:3]),
                         bench=bench, open_interest=q.open_interest,
                         funding_rate=getattr(q, 'funding_rate', 0) or 0,
@@ -420,6 +481,13 @@ class AutoTrader:
                     logger.info("%s 异常波动 %+.1f%% → 注入新闻 %d 条",
                                symbol, q.change_pct * 100, len(news_titles))
 
+                # 盘口实时压力 (orderbook 前10档)
+                ob_str = ""
+                try:
+                    book = await self._market.get_order_book(symbol, limit=10)
+                    ob_str = _pressure_str(book)
+                except Exception: pass
+
                 ai_inp = AIInput(
                     symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                     klines_1h=k_1h, klines_4h=[], klines_1d=[],
@@ -431,6 +499,7 @@ class AutoTrader:
                                vwap=ind_1h.vwap),
                     ind_4h=None, ind_1d=None,
                     ind_5m=ind_5m_raw,
+                    orderbook=ob_str,
                     news=news_titles, news_summary="; ".join(news_titles[:3]),
                     bench=bench, open_interest=q.open_interest,
                     funding_rate=getattr(q, 'funding_rate', 0) or 0,

@@ -60,6 +60,7 @@ class AIInput:
     volume_24h: float = 0.0
     ind_15m: dict | None = None  # 日内主指标 (管仓用 15m)
     ind_5m: dict | None = None   # 开仓用 5m (更细的日内信号)
+    orderbook: str = ""           # 盘口压力文本 (实时微观数据)
     session: str = "regular"  # pre_market / regular / post_market / weekend / holiday
     lessons: list[str] = field(default_factory=list)  # 复盘经验
     rules: list[str] = field(default_factory=list)    # 硬规则 (禁止项)
@@ -178,6 +179,7 @@ class AINativeDecisionMaker:
             + f"大盘 {bench_str}\n"
             f"OI={inp.open_interest:.0f} 费率={inp.funding_rate*100:.4f}%\n"
             f"新闻 {inp.news_summary or '无'}\n"
+            + (inp.orderbook or "")
             + hist_str
             + rules_str
             + lesson_str
@@ -260,6 +262,7 @@ class AINativeDecisionMaker:
             + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')}\n"
             + f"大盘 {bench_str}\n"
             + f"新闻 {inp.news_summary or '无'}\n"
+            + (inp.orderbook or "")
             + hist_str
             + "\n日内持仓管理原则(快进快出):\n"
             "1. 小目标落袋: 浮盈达0.5%-1.5%即果断止盈离场(日内吃波段, 不贪大, 到目标就走)\n"
