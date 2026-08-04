@@ -214,7 +214,7 @@ FULL_SCAN_INTERVAL = 600
 QUOTE_INTERVAL = 30        # 行情轮询
 SCAN_INTERVAL = 300        # 管仓/开仓扫描: 5分钟 (日内止盈止损需要更频繁捕捉)
 SYMBOL_REFRESH_INTERVAL = 7200  # 品种池刷新: 2小时
-LOSS_COOLDOWN_HOURS = 24         # 亏损平仓后冷却: 24小时不进入品种池
+LOSS_COOLDOWN_HOURS = 2          # 亏损平仓后冷却: 2小时不进入品种池
 TOP_N_SYMBOLS = 25
 BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]
 # 热门股白名单: 强制保留在品种池 (不受热度排名影响)
@@ -341,7 +341,7 @@ class AutoTrader:
             return ""
 
     def _load_cooldowns(self) -> dict[str, float]:
-        """从 ai_memory 恢复亏损冷却 (最近24h内亏损平仓的品种)。"""
+        """从 ai_memory 恢复亏损冷却 (最近2h内亏损平仓的品种)。"""
         import datetime as _dt
         cooldown = {}
         try:
