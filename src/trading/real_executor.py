@@ -16,13 +16,17 @@ logger = logging.getLogger(__name__)
 class RealExecutor:
     """Bitget 实盘执行器。"""
 
-    def __init__(self, credentials: Optional[BitgetCredentials] = None):
+    def __init__(self, credentials: Optional[BitgetCredentials] = None,
+                 safety: Optional[object] = None):
         self._trader = BitgetTrader(credentials)
         self._ready = self._trader.ready
         self._positions: dict[str, Position] = {}  # position_id → Position (内存缓存)
         self._equity = 10000  # 兜底（会在 execute_signal 时更新）
         self._contract_info: dict = {}  # symbol → 合约规格缓存
         self._on_position_closed = None  # 回调(symbol, pnl, reason): 托管SL/TP平仓通知
+        self._safety = safety  # SafetySystem (连续亏损/日回撤熔断)
+        self._day_initial_equity = None  # 当日初始净值 (日回撤基准)
+        self._day_base_date = ""          # 当日日期 (跨天重置基准)
         from src.trading.tracker import Tracker
         self._tracker = Tracker(mode="real")
 
@@ -50,6 +54,26 @@ class RealExecutor:
             self._equity = acct.equity  # 总净值, 用于每仓 = equity/5
         except Exception:
             pass
+
+        # ── 安全系统: 熔断检查 (连续亏损/日回撤) ──
+        if self._safety:
+            try:
+                # 当日基准 (每天第一次调用时锁定)
+                from datetime import datetime, timezone
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                if self._day_base_date != today:
+                    self._day_base_date = today
+                    self._day_initial_equity = self._equity
+                if self._day_initial_equity and self._day_initial_equity > 0:
+                    verdict = self._safety.check_daily_drawdown(self._equity, self._day_initial_equity)
+                    if not verdict.passed:
+                        return OrderResult(status="REJECTED", reason=verdict.reason)
+                verdict = self._safety.check_hard_limits(signal, list(self._positions.values()),
+                                                        self.get_balance_sync())
+                if not verdict.passed:
+                    return OrderResult(status="REJECTED", reason=verdict.reason)
+            except Exception as e:
+                logger.warning("安全检查异常(放行): %s", e)
 
         # 预取合约规格 (minTradeNum/sizeMultiplier/minTradeUSDT)
         if signal.symbol not in self._contract_info:
@@ -170,6 +194,15 @@ class RealExecutor:
                     self._tracker.record_close(
                         pos, pos.mark_price, pnl, reason,
                         pos.strategy_id, funding_cost=0)
+                    # 安全系统: 连续亏损计数
+                    if self._safety:
+                        try:
+                            if pnl < 0:
+                                self._safety.on_loss()
+                            else:
+                                self._safety.on_win()
+                        except Exception:
+                            pass
             except Exception as e:
                 logger.warning("记录平仓失败: %s", e)
             if position_id in self._positions:
@@ -231,10 +264,28 @@ class RealExecutor:
                             self._on_position_closed(stale.symbol, pnl, "EXCHANGE_SLTP")
                         except Exception:
                             pass
+                    # 安全系统: 连续亏损计数 (托管平仓也算)
+                    if self._safety:
+                        try:
+                            if pnl < 0:
+                                self._safety.on_loss()
+                            else:
+                                self._safety.on_win()
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 del self._positions[stale_id]
         return result
+
+    def get_balance_sync(self) -> AccountBalance:
+        """同步版账户余额 (安全检查用)。"""
+        return AccountBalance(
+            initial_capital=self._equity,
+            current_balance=self._equity,
+            total_pnl=0,
+            used_margin=0,
+        )
 
     async def get_balance(self) -> AccountBalance:
         if not self._ready:

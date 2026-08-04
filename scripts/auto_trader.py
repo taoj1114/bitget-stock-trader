@@ -112,7 +112,7 @@ class AutoTrader:
         mode = config.mode
         if mode == "real":
             from src.trading.real_executor import RealExecutor
-            self._executor = RealExecutor()
+            self._executor = RealExecutor(safety=safety)
             if not self._executor.ready:
                 logger.warning("Bitget API 未配置，降级为纸盘")
                 self._executor = PaperExecutor(initial_capital=10000, safety=safety, slippage=slippage)
