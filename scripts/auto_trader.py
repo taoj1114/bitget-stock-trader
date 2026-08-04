@@ -323,6 +323,23 @@ class AutoTrader:
         except Exception as e:
             logger.warning("托管平仓记忆回填失败 %s: %s", symbol, e)
 
+    def _account_status_str(self) -> str:
+        """账户状态提示 — 平衡防守过度 (仅当亏损较大时提醒)。"""
+        try:
+            # RealExecutor._equity 是属性, PaperExecutor 用 get_equity
+            eq = getattr(self._executor, "_equity", 0)
+            if isinstance(eq, (int, float)) and eq > 0:
+                equity = float(eq)
+            else:
+                equity = 0.0
+            if equity <= 0:
+                return ""
+            return ("账户状态: 当前净值 $%.2f, 从 $5 初始资金亏损约 %.0f%%\n"
+                    "提醒: 防守过度同样会持续亏损——符合全部入场条件(方向+位置+走势+盘口)时不要犹豫, "
+                    "但绝不降低标准乱开仓。\n" % (equity, (1 - equity / 5.0) * 100))
+        except Exception:
+            return ""
+
     def _load_cooldowns(self) -> dict[str, float]:
         """从 ai_memory 恢复亏损冷却 (最近24h内亏损平仓的品种)。"""
         import datetime as _dt
@@ -595,6 +612,7 @@ class AutoTrader:
                     ind_5m=ind_5m_raw,
                     orderbook=ob_str,
                     trend_shape=trend_str,
+                    account_status=self._account_status_str(),
                     news=news_titles, news_summary="; ".join(news_titles[:3]),
                     bench=bench, open_interest=q.open_interest,
                     funding_rate=getattr(q, 'funding_rate', 0) or 0,

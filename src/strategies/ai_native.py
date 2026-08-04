@@ -62,6 +62,7 @@ class AIInput:
     ind_5m: dict | None = None   # 开仓用 5m (更细的日内信号)
     orderbook: str = ""           # 盘口压力文本 (实时微观数据)
     trend_shape: str = ""          # 走势形状分析文本 (动态轨迹)
+    account_status: str = ""       # 账户状态提示 (防防守过度)
     session: str = "regular"  # pre_market / regular / post_market / weekend / holiday
     lessons: list[str] = field(default_factory=list)  # 复盘经验
     rules: list[str] = field(default_factory=list)    # 硬规则 (禁止项)
@@ -185,6 +186,7 @@ class AINativeDecisionMaker:
             + hist_str
             + rules_str
             + lesson_str
+            + (inp.account_status or "")
             + "\n输出JSON:\n"
             '{"action":"BUY/SELL/HOLD","stop_loss":x,"take_profit":x,"reason":"..."}\n'
             "决策前先在内心快速推理(不输出思考过程, 只输出JSON):\n"
