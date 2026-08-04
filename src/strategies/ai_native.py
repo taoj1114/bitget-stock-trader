@@ -231,9 +231,9 @@ class AINativeDecisionMaker:
             f"持仓: {ctx.get('side','?')} 开仓价=${ctx.get('entry',0):.2f} "
             f"持仓{ctx.get('hours',0):.0f}小时 浮盈=${ctx.get('pnl',0):.2f}\n"
             f"当前SL=${ctx.get('sl',0):.2f} 当前TP=${ctx.get('tp',0):.2f}\n\n"
-            + (f"15m RSI={inp.ind_15m.get('rsi',50):.0f} MA10={inp.ind_15m.get('ma10',0):.2f} MA30={inp.ind_15m.get('ma30',0):.2f} "
-               f"ADX={inp.ind_15m.get('adx',0):.0f} {inp.ind_15m.get('regime','')} "
-               f"VWAP={inp.ind_15m.get('vwap',0):.2f} 量比={inp.ind_15m.get('volume_ratio',1):.1f} BB={inp.ind_15m.get('bb_position',0.5):.2f} [日内]\n" if inp.ind_15m else "")
+            + (f"5m RSI={inp.ind_5m.get('rsi',50):.0f} MA10={inp.ind_5m.get('ma10',0):.2f} MA30={inp.ind_5m.get('ma30',0):.2f} "
+               f"ADX={inp.ind_5m.get('adx',0):.0f} {inp.ind_5m.get('regime','')} "
+               f"VWAP={inp.ind_5m.get('vwap',0):.2f} 量比={inp.ind_5m.get('volume_ratio',1):.1f} BB={inp.ind_5m.get('bb_position',0.5):.2f} [日内]\n" if inp.ind_5m else "")
             + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} MA10={inp.ind_1h.get('ma10',0):.1f} MA30={inp.ind_1h.get('ma30',0):.1f} "
             f"ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')}\n"
             + (f"4H RSI={inp.ind_4h.get('rsi',0):.0f}\n" if inp.ind_4h else "")
