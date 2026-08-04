@@ -22,7 +22,7 @@ from src.storage.kline_store import KlineStore
 from src.storage.fund_store import FundStore
 from src.storage.news_sentiment_store import NewsSentimentStore
 from src.features.pipeline import FeaturePipeline
-from src.core.types import Kline
+from src.core.types import Kline  # noqa: F401 (类型注解)
 from src.strategies.ai_native import AINativeDecisionMaker, AIInput, get_us_session
 
 logger = logging.getLogger("autotrader")
@@ -244,10 +244,6 @@ class AutoTrader:
             candidates = self._filter_by_price_change(quotes)
             # 注意: 无价格变动时不提前return — 管仓必须每轮执行
 
-        from src.storage.kline_aggregator import KlineAggregator
-        agg = KlineAggregator()
-
-        # 大盘
         bench = {}
         for b in BENCHMARK_SYMBOLS:
             try:
@@ -273,10 +269,6 @@ class AutoTrader:
                     except Exception: pass
                     ind = self._tech.calculate(k_1h)
                     reg = self._regime_detector.detect(k_1h)
-                    k_4h = [Kline(**r) for r in agg.aggregate(k_1h, "4H")]
-                    k_1d = [Kline(**r) for r in agg.aggregate(k_1h, "1D")]
-                    ind4 = self._tech.calculate(k_4h) if len(k_4h)>=5 else None
-                    ind1d = self._tech.calculate(k_1d) if len(k_1d)>=3 else None
                     ind5 = None
                     if len(k_5m) >= 30:
                         i5 = self._tech.calculate(k_5m)
@@ -297,15 +289,14 @@ class AutoTrader:
                         news_titles = [item.title for item in news_items[:5]]
                     ai_inp = AIInput(
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
-                        klines_1h=k_1h, klines_4h=k_4h, klines_1d=k_1d,
+                        klines_1h=k_1h, klines_4h=[], klines_1d=[],
                         ind_1h=dict(rsi=ind.rsi14, ma10=ind.ma10, ma30=ind.ma30,
                                    macd=ind.macd, atr=ind.atr14, adx=reg.adx,
                                    regime=reg.regime,
                                    bb_position=_bb_pos(ind, q.mark_price),
                                    volume_ratio=ind.volume_ratio,
                                    vwap=ind.vwap),
-                        ind_4h=dict(rsi=ind4.rsi14) if ind4 else None,
-                        ind_1d=dict(rsi=ind1d.rsi14) if ind1d else None,
+                        ind_4h=None, ind_1d=None,
                         ind_5m=ind5,
                         news=news_titles, news_summary="; ".join(news_titles[:3]),
                         bench=bench, open_interest=q.open_interest,
@@ -406,10 +397,6 @@ class AutoTrader:
                 except Exception: pass
                 ind_1h = self._tech.calculate(k_1h)
                 regime = self._regime_detector.detect(k_1h)
-                k_4h = [Kline(**r) for r in agg.aggregate(k_1h, "4H")]
-                k_1d = [Kline(**r) for r in agg.aggregate(k_1h, "1D")]
-                ind_4h_raw = self._tech.calculate(k_4h) if len(k_4h) >= 5 else None
-                ind_1d_raw = self._tech.calculate(k_1d) if len(k_1d) >= 3 else None
                 ind_5m_raw = None
                 if len(k_5m) >= 30:
                     i5 = self._tech.calculate(k_5m)
@@ -435,15 +422,14 @@ class AutoTrader:
 
                 ai_inp = AIInput(
                     symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
-                    klines_1h=k_1h, klines_4h=k_4h, klines_1d=k_1d,
+                    klines_1h=k_1h, klines_4h=[], klines_1d=[],
                     ind_1h=dict(rsi=ind_1h.rsi14, ma10=ind_1h.ma10, ma30=ind_1h.ma30,
                                macd=ind_1h.macd, atr=ind_1h.atr14,
                                adx=regime.adx, regime=regime.regime,
                                bb_position=_bb_pos(ind_1h, q.mark_price),
                                volume_ratio=ind_1h.volume_ratio,
                                vwap=ind_1h.vwap),
-                    ind_4h=dict(rsi=ind_4h_raw.rsi14) if ind_4h_raw else None,
-                    ind_1d=dict(rsi=ind_1d_raw.rsi14) if ind_1d_raw else None,
+                    ind_4h=None, ind_1d=None,
                     ind_5m=ind_5m_raw,
                     news=news_titles, news_summary="; ".join(news_titles[:3]),
                     bench=bench, open_interest=q.open_interest,
