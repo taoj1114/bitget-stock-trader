@@ -163,7 +163,7 @@ class AutoTrader:
 
     def __init__(self):
         config = get_config()
-        self._symbols = config.symbols
+        self._symbols = [s for s in config.symbols if s not in ETF_BLACKLIST]  # 启动即排除ETF
         self._market = BitgetMarketSource()
         self._symbol_source = BitgetSymbolSource()
 
