@@ -57,6 +57,33 @@ def _kline_dicts(klines) -> list[dict]:
     """Kline dataclass → dict (供落库)。"""
     return [k.__dict__ if hasattr(k, "__dict__") else k for k in klines]
 
+
+def _aggregate_15m(klines_5m: list) -> list[dict]:
+    """5m K线 → 15m (3根合成1根, 供落库)。"""
+    try:
+        import pandas as pd
+        rows = _kline_dicts(klines_5m)
+        if len(rows) < 3:
+            return []
+        df = pd.DataFrame(rows)
+        df["datetime"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("datetime", inplace=True)
+        resampled = df.resample("15min").agg({
+            "open": "first", "high": "max", "low": "min",
+            "close": "last", "volume": "sum", "turnover": "sum",
+        }).dropna()
+        result = []
+        for ts, row in resampled.iterrows():
+            result.append({
+                "timestamp": int(ts.timestamp() * 1000),
+                "open": float(row["open"]), "high": float(row["high"]),
+                "low": float(row["low"]), "close": float(row["close"]),
+                "volume": float(row["volume"]), "turnover": float(row["turnover"]),
+            })
+        return result
+    except Exception:
+        return []
+
 FULL_SCAN_INTERVAL = 600
 QUOTE_INTERVAL = 30        # 行情轮询
 SCAN_INTERVAL = 300        # 管仓/开仓扫描: 5分钟 (日内止盈止损需要更频繁捕捉)
@@ -221,10 +248,11 @@ class AutoTrader:
                     k_5m = await self._market.get_klines(pos.symbol, "5m", 500)
                     q = await self._market.get_quote(pos.symbol)
                     if not q or len(k_1h) < 30: continue
-                    # K线落库 (实时数据追加)
+                    # K线落库 (实时数据追加: 5m + 合成15m + 1H)
                     try:
                         self._kline_store.upsert_batch(pos.symbol, _kline_dicts(k_1h), "1H")
                         self._kline_store.upsert_batch(pos.symbol, _kline_dicts(k_5m), "5m")
+                        self._kline_store.upsert_batch(pos.symbol, _aggregate_15m(k_5m), "15m")
                     except Exception: pass
                     ind = self._tech.calculate(k_1h)
                     reg = self._regime_detector.detect(k_1h)
@@ -353,10 +381,11 @@ class AutoTrader:
                 k_5m = await self._market.get_klines(symbol, "5m", 500)
                 q = await self._market.get_quote(symbol)
                 if not q or len(k_1h) < 30: continue
-                # K线落库 (实时数据追加)
+                # K线落库 (实时数据追加: 5m + 合成15m + 1H)
                 try:
                     self._kline_store.upsert_batch(symbol, _kline_dicts(k_1h), "1H")
                     self._kline_store.upsert_batch(symbol, _kline_dicts(k_5m), "5m")
+                    self._kline_store.upsert_batch(symbol, _aggregate_15m(k_5m), "15m")
                 except Exception: pass
                 ind_1h = self._tech.calculate(k_1h)
                 regime = self._regime_detector.detect(k_1h)
