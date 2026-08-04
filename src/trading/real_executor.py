@@ -67,7 +67,14 @@ class RealExecutor:
         if notional < 5:
             return OrderResult(status="REJECTED", reason=f"订单价值 ${notional:.2f} < 最低 $5")
 
-        # 仓位上限 (Bitget 保证金自然限制)
+        # 仓位上限 + 同品种去重 (先同步交易所实际持仓, 防止缓存脱节)
+        try:
+            await self.get_positions()
+        except Exception:
+            pass
+        if signal.symbol in self._positions:
+            return OrderResult(status="REJECTED",
+                             reason=f"同品种已有持仓 {signal.symbol}")
         max_pos = 5
         if len(self._positions) >= max_pos:
             return OrderResult(status="REJECTED",
@@ -199,9 +206,26 @@ class RealExecutor:
             )
             result.append(pos)
             self._positions[pos.id] = pos  # 同步内存缓存
-        # 清理已平仓的残留缓存
+        # 清理已平仓的残留缓存 + 记录托管SL/TP触发的平仓
         for stale_id in list(self._positions.keys()):
             if stale_id not in seen_ids:
+                stale = self._positions[stale_id]
+                # 记录被 Bitget 托管 SL/TP 触发平掉的仓位 (本地 close_position 未调用)
+                try:
+                    pnl = getattr(stale, "unrealized_pnl", 0) or 0
+                    if getattr(stale, "opened_at", None):
+                        from datetime import datetime, timezone
+                        opened = stale.opened_at
+                        if opened.tzinfo is None:
+                            opened = opened.replace(tzinfo=timezone.utc)
+                        hours = round((datetime.now(timezone.utc) - opened).total_seconds() / 3600, 1)
+                    else:
+                        hours = 0
+                    self._tracker.record_close(
+                        stale, stale.mark_price, pnl, "EXCHANGE_SLTP",
+                        stale.strategy_id, funding_cost=0)
+                except Exception:
+                    pass
                 del self._positions[stale_id]
         return result
 
