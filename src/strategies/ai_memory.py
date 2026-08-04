@@ -58,7 +58,12 @@ class AIMemory:
                      session: str, mark_price: float, rsi_1h: float,
                      adx: float, regime: str, entry: float = 0.0,
                      sl_price: float = 0.0, tp_price: float = 0.0) -> None:
-        """记录一次 AI 决策（开仓或 HOLD）。"""
+        """记录一次 AI 决策。
+
+        HOLD 与开仓分库: HOLD 每天数千条, 若与开仓混存会把
+        真实交易样本挤出 MAX_DECISIONS, 导致平仓无法回填、
+        复盘无样本可学。→ 真实开仓永远保留, HOLD 只留最近记录。
+        """
         sl_pct = None
         tp_pct = None
         if entry > 0:
@@ -76,11 +81,21 @@ class AIMemory:
             "close_pnl": None, "close_price": None, "outcome": None,
             "close_reason": None, "holding_hours": None,
         }
-        self._data["decisions"].append(d)
-        # 限制数量
-        if len(self._data["decisions"]) > MAX_DECISIONS:
-            self._data["decisions"] = self._data["decisions"][-MAX_DECISIONS:]
+        if action in ("BUY", "SELL", "STRONG_BUY", "STRONG_SELL"):
+            # 开仓决策: 真实交易样本, 永不溢出
+            self._data["decisions"].append(d)
+            if len(self._data["decisions"]) > MAX_DECISIONS:
+                self._data["decisions"] = self._data["decisions"][-MAX_DECISIONS:]
+        else:
+            # HOLD: 只保留最近 200 条 (审计用, 不参与复盘)
+            self._data.setdefault("holds", []).append(d)
+            if len(self._data["holds"]) > 200:
+                self._data["holds"] = self._data["holds"][-200:]
         self._save()
+
+    def recent_holds(self, limit: int = 50) -> list[dict]:
+        """最近 HOLD 决策 (审计用, 不注入复盘)。"""
+        return list(self._data.get("holds", []))[-limit:]
 
     def close_decision(self, symbol: str, close_price: float, pnl: float,
                        close_reason: str = "", holding_hours: float = 0) -> None:
