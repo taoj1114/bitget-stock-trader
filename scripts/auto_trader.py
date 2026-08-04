@@ -168,6 +168,22 @@ class AutoTrader:
         # 亏损冷却: symbol → 冷却截止时间戳 (重启后从 ai_memory 恢复)
         self._cooldown: dict[str, float] = self._load_cooldowns()
 
+        # 托管 SL/TP 平仓 → 回填 AI 记忆 (复盘能看到真实止损)
+        if hasattr(self._executor, "_on_position_closed"):
+            self._executor._on_position_closed = self._on_exchange_close
+
+    def _on_exchange_close(self, symbol: str, pnl: float, reason: str):
+        """交易所托管 SL/TP 触发平仓 → 回填 ai_memory。"""
+        try:
+            self._memory.close_decision(symbol, 0, pnl, close_reason=reason)
+            if pnl < 0:
+                self._cooldown[symbol] = time.time() + LOSS_COOLDOWN_HOURS * 3600
+                logger.info("%s 托管止损 $%.2f → 冷却 %dh", symbol, pnl, LOSS_COOLDOWN_HOURS)
+            else:
+                logger.info("%s 托管止盈 $%.2f", symbol, pnl)
+        except Exception as e:
+            logger.warning("托管平仓记忆回填失败 %s: %s", symbol, e)
+
     def _load_cooldowns(self) -> dict[str, float]:
         """从 ai_memory 恢复亏损冷却 (最近24h内亏损平仓的品种)。"""
         import datetime as _dt

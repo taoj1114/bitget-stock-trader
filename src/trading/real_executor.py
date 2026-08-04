@@ -22,6 +22,7 @@ class RealExecutor:
         self._positions: dict[str, Position] = {}  # position_id → Position (内存缓存)
         self._equity = 10000  # 兜底（会在 execute_signal 时更新）
         self._contract_info: dict = {}  # symbol → 合约规格缓存
+        self._on_position_closed = None  # 回调(symbol, pnl, reason): 托管SL/TP平仓通知
         from src.trading.tracker import Tracker
         self._tracker = Tracker(mode="real")
 
@@ -224,6 +225,12 @@ class RealExecutor:
                     self._tracker.record_close(
                         stale, stale.mark_price, pnl, "EXCHANGE_SLTP",
                         stale.strategy_id, funding_cost=0)
+                    # 通知 AI 记忆层 (复盘学习需要看到止损结果)
+                    if self._on_position_closed:
+                        try:
+                            self._on_position_closed(stale.symbol, pnl, "EXCHANGE_SLTP")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
                 del self._positions[stale_id]
