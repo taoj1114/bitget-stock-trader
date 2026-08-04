@@ -97,6 +97,10 @@ class AIMemory:
         """最近 HOLD 决策 (审计用, 不注入复盘)。"""
         return list(self._data.get("holds", []))[-limit:]
 
+    def count_closed(self) -> int:
+        """已平仓(有结果)的决策数 — 复盘触发基准。"""
+        return sum(1 for d in self._data["decisions"] if d.get("outcome") is not None)
+
     def close_decision(self, symbol: str, close_price: float, pnl: float,
                        close_reason: str = "", holding_hours: float = 0) -> None:
         """平仓时回填最近一次未平仓决策的结果。"""
