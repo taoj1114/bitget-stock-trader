@@ -370,6 +370,12 @@ class AutoTrader:
     async def run_once(self):
         logger.info("=== AutoTrader 单次扫描 ===")
 
+        # 每轮先刷新账户净值 (供仓位计算 + 账户状态注入, 防用过期值)
+        try:
+            await self._executor.get_equity()
+        except Exception:
+            pass
+
         quotes = await self._fetch_all_quotes()
         rich_quotes = await self._fetch_rich_quotes()
         if not quotes:
@@ -487,8 +493,11 @@ class AutoTrader:
                         logger.info("%s %s → 管仓AI平仓: %s",
                                    pos.symbol, pos.side, sig.reason[:60])
                         close_pnl = getattr(pos, 'unrealized_pnl', 0) or 0
-                        await self._executor.close_position(pos.id, "AI_MANAGE_CLOSE")
-                        # 亏损平仓 → 冷却24h, 不进品种池
+                        close_result = await self._executor.close_position(pos.id, "AI_MANAGE_CLOSE")
+                        if close_result.status != "CLOSED":
+                            logger.warning("%s 平仓失败: %s", pos.symbol, close_result.reason)
+                            continue  # 平仓未成交, 不回填决策
+                        # 亏损平仓 → 冷却2h, 不进品种池
                         if close_pnl < 0:
                             self._cooldown[pos.symbol] = time.time() + LOSS_COOLDOWN_HOURS * 3600
                             logger.info("%s 亏损平仓 $%.2f → 冷却 %dh", pos.symbol, close_pnl, LOSS_COOLDOWN_HOURS)
@@ -628,12 +637,15 @@ class AutoTrader:
                     result = await self._executor.execute_signal(sig)
                     if result.status == "FILLED":
                         logger.info("  → 开仓: qty=%.1f", result.fill_quantity)
-                    self._memory.log_decision(
-                        symbol, sig.action, sig.reason, get_us_session(),
-                        q.mark_price, ind_1h.rsi14, regime.adx, regime.regime,
-                        entry=q.mark_price,
-                        sl_price=sig.stop_loss,
-                        tp_price=sig.take_profits[0] if sig.take_profits else 0)
+                        # 只在真实成交时记录 (被拒单不记录, 防污染决策库)
+                        self._memory.log_decision(
+                            symbol, sig.action, sig.reason, get_us_session(),
+                            q.mark_price, ind_1h.rsi14, regime.adx, regime.regime,
+                            entry=q.mark_price,
+                            sl_price=sig.stop_loss,
+                            tp_price=sig.take_profits[0] if sig.take_profits else 0)
+                    else:
+                        logger.info("  → 开仓被拒: %s", result.reason)
                 else:
                     logger.info("%s: AI=HOLD", symbol)
                     # 记录 HOLD (保证复盘有数据; 统计时只算有结果的)
@@ -735,6 +747,20 @@ class AutoTrader:
                     q = await self._market.get_quote(c.symbol)
                     if q and q.mark_price > 0 and (q.volume_24h or 0) > 0:
                         rich[c.symbol] = {
+                            "volume_24h": q.volume_24h,
+                            "change_pct": abs(q.change_pct),
+                            "turnover_24h": q.turnover_24h,
+                        }
+                except Exception: pass
+
+            # 白名单热门股: 即使不在前80也单独拉行情 (保证强制进池)
+            for h in HOT_SYMBOLS:
+                if h in rich or h in ETF_BLACKLIST:
+                    continue
+                try:
+                    q = await self._market.get_quote(h)
+                    if q and q.mark_price > 0 and (q.volume_24h or 0) > 0:
+                        rich[h] = {
                             "volume_24h": q.volume_24h,
                             "change_pct": abs(q.change_pct),
                             "turnover_24h": q.turnover_24h,

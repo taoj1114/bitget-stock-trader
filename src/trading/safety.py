@@ -8,6 +8,9 @@ Layer 3: Circuit breaker — data failures>5, price spike>5% → READONLY
 from datetime import datetime, timezone
 from typing import Optional
 
+import logging
+logger = logging.getLogger(__name__)
+
 from src.core.types import SafetyVerdict, Signal, Position, AccountBalance
 
 
@@ -39,21 +42,27 @@ class SafetySystem:
         if self._circuit_broken:
             return SafetyVerdict(passed=False, reason="断路器已触发：只读模式", layer="circuit_breaker")
 
-        # 暂停
-        if self._paused_until and datetime.now(timezone.utc) < self._paused_until:
-            return SafetyVerdict(passed=False,
-                                reason=f"暂停中至 {self._paused_until.isoformat()}", layer="conditional")
+        # 暂停 (连续亏损/日回撤触发, 2h 自动恢复)
+        if self._paused_until:
+            if datetime.now(timezone.utc) < self._paused_until:
+                return SafetyVerdict(passed=False,
+                                    reason=f"暂停中至 {self._paused_until.isoformat()}", layer="conditional")
+            else:
+                # 暂停到期 → 自动恢复: 重置计数器
+                self._paused_until = None
+                self._consecutive_losses = 0
+                logger.info("暂停到期, 自动恢复交易")
 
         # 最大持仓数
         if len(positions) >= self.max_positions:
             return SafetyVerdict(passed=False,
                                 reason=f"持仓数已达上限 ({len(positions)}/{self.max_positions})", layer="hard")
 
-        # 连续亏损
+        # 连续亏损 (暂停由 on_loss 设置的 _paused_until 控制, 上面已检查)
         if self._consecutive_losses >= self.max_consecutive_losses:
-            self._paused_until = None  # Will be set by layer 2
             return SafetyVerdict(passed=False,
-                                reason=f"连续亏损 {self._consecutive_losses} 笔", layer="conditional")
+                                reason=f"连续亏损 {self._consecutive_losses} 笔, 暂停中",
+                                layer="conditional")
 
         # 单笔风险（合约宽容度更高：止损可能 5-10%）
         if signal.stop_loss > 0 and signal.entry_price > 0:
@@ -73,17 +82,23 @@ class SafetySystem:
 
         drawdown_pct = (initial_capital - current_balance) / initial_capital * 100
         if drawdown_pct > self.max_daily_drawdown_pct:
-            self._paused_until = None  # Pause indefinitely
+            from datetime import timedelta
+            self._paused_until = datetime.now(timezone.utc) + timedelta(hours=2)  # 2h 自动恢复
+            logger.info("日内回撤 %.1f%% 超限 → 暂停开仓 2h", drawdown_pct)
             return SafetyVerdict(passed=False,
                                 reason=f"日内回撤 {drawdown_pct:.1f}% 超限", layer="conditional")
 
         return SafetyVerdict(passed=True, reason="", layer="conditional")
 
     def on_loss(self):
-        """记录一笔亏损。"""
+        """记录一笔亏损。连续亏损≥阈值 → 暂停 2h (自动恢复, 防永久死锁)。"""
         self._consecutive_losses += 1
         if self._consecutive_losses >= self.max_consecutive_losses:
-            self._paused_until = None  # 无限暂停
+            from datetime import timedelta
+            self._paused_until = datetime.now(timezone.utc) + timedelta(hours=2)
+            logger.info("连续亏损 %d 笔 → 暂停开仓 2h (至 %s)",
+                       self._consecutive_losses,
+                       self._paused_until.strftime("%H:%M"))
 
     def on_win(self):
         """记录一笔盈利，重置计数器。"""

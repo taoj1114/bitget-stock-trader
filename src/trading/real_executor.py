@@ -52,8 +52,10 @@ class RealExecutor:
         try:
             acct = await self._trader.get_account()
             self._equity = acct.equity  # 总净值, 用于每仓 = equity/5
-        except Exception:
-            pass
+        except Exception as e:
+            # 账户查询失败 → 拒绝下单 (绝不用兜底值算仓位, 防灾难仓位)
+            logger.error("账户查询失败, 拒绝开仓 %s: %s", signal.symbol, e)
+            return OrderResult(status="REJECTED", reason="账户查询失败, 无法计算仓位")
 
         # ── 安全系统: 熔断检查 (连续亏损/日回撤) ──
         if self._safety:
@@ -86,6 +88,12 @@ class RealExecutor:
 
         if quantity <= 0:
             return OrderResult(status="REJECTED", reason="仓位为0")
+
+        # 杠杆校验 (safety.max_leverage 配置生效)
+        leverage = self._calc_leverage(signal)
+        if self._safety and leverage > getattr(self._safety, "max_leverage", 100):
+            return OrderResult(status="REJECTED",
+                             reason=f"杠杆 {leverage}x 超过安全上限 {self._safety.max_leverage}x")
 
         # 最低订单量检查 ($5)
         notional = quantity * signal.entry_price
@@ -302,11 +310,12 @@ class RealExecutor:
         )
 
     async def get_equity(self) -> float:
-        """净值 = 余额 + 未实现盈亏。"""
+        """净值 = 余额 + 未实现盈亏 (同时刷新 self._equity 供仓位计算)。"""
         if not self._ready:
             return 0.0
         try:
             acct = await self._trader.get_account()
+            self._equity = acct.equity  # 同步内存值 (防过期兜底)
             return acct.equity
         except Exception:
             balance = await self.get_balance()
