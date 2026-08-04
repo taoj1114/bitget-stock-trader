@@ -145,6 +145,9 @@ SYMBOL_REFRESH_INTERVAL = 7200  # 品种池刷新: 2小时
 LOSS_COOLDOWN_HOURS = 24         # 亏损平仓后冷却: 24小时不进入品种池
 TOP_N_SYMBOLS = 25
 BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]
+# 热门股白名单: 强制保留在品种池 (不受热度排名影响)
+HOT_SYMBOLS = ["NVDA", "TSLA", "META", "AMZN", "MSFT", "AAPL", "GOOGL",
+               "PLTR", "AMD", "COIN", "MSTR", "SMCI", "AVGO", "NFLX", "ARM"]
 
 
 class AutoTrader:
@@ -434,7 +437,11 @@ class AutoTrader:
         # ── AI 原生扫描开仓 (仅当有候选品种时) ──
         symbols_to_scan = []
         if candidates:
-            symbols_to_scan = self._rank_symbols(candidates, rich_quotes)[:10]
+            # 扫描优先级: 白名单热门股优先(最多5个) + 热度股补充
+            hot_cands = [s for s in candidates if s in HOT_SYMBOLS][:5]
+            rest = [s for s in candidates if s not in HOT_SYMBOLS]
+            rest_ranked = self._rank_symbols(rest, rich_quotes)
+            symbols_to_scan = (hot_cands + rest_ranked)[:10]
             logger.info("AI 原生扫描 %d 品种 | 大盘: %s",
                        len(symbols_to_scan),
                        " ".join(f"{k}{v:+.1f}%" for k,v in bench.items()))
@@ -633,7 +640,11 @@ class AutoTrader:
                 if len(active) < TOP_N_SYMBOLS // 2 and self._cooldown:
                     logger.info("冷却品种过多(%d), 放宽过滤", len([s for s in ranked if self._cooldown.get(s, 0) > now]))
                     active = ranked
-                new_pool = active[:TOP_N_SYMBOLS]
+                # 池子 = 热度 top20 + 热门股白名单 (选项B)
+                new_pool = active[:TOP_N_SYMBOLS - len(HOT_SYMBOLS)]
+                for h in HOT_SYMBOLS:
+                    if h in rich and h not in new_pool and self._cooldown.get(h, 0) <= now:
+                        new_pool.append(h)
                 # 保留现有持仓品种（避免池子刷新把持仓踢掉）
                 positions = await self._executor.get_positions()
                 held = {p.symbol for p in positions}
@@ -641,6 +652,9 @@ class AutoTrader:
                     if h not in new_pool:
                         new_pool.append(h)
                 self._symbols = new_pool
+                hot_in = [h for h in HOT_SYMBOLS if h in new_pool]
+                if hot_in:
+                    logger.info("品种池含白名单热门股: %s", hot_in)
                 cooling_now = [s for s in self._cooldown if self._cooldown[s] > now and s not in held]
                 if cooling_now:
                     logger.info("品种池刷新 | 冷却中跳过: %s", cooling_now[:8])
