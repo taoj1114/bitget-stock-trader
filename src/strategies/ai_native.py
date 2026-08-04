@@ -79,12 +79,14 @@ class AINativeDecisionMaker:
         self._model = model
 
     async def _call(self, system: str, prompt: str, model: str,
-                    temp: float, max_tokens: int, json_mode: bool = False) -> str:
+                    temp: float, max_tokens: int, json_mode: bool = False,
+                    retries: int = 0) -> str:
+        """调用模型。retries>0 时空返回/异常时重试。"""
         if not self._api_key:
             logger.warning("API key 未配置")
             return ""
         if not self._client:
-            self._client = httpx.AsyncClient(timeout=45)
+            self._client = httpx.AsyncClient(timeout=60)
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self._api_key}"}
         payload = {
             "model": model,
@@ -97,20 +99,30 @@ class AINativeDecisionMaker:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
-        try:
-            resp = await self._client.post(f"{self._base_url}/chat/completions", headers=headers, json=payload)
-            data = resp.json()
-            if resp.status_code != 200:
-                logger.warning("API %d: %s", resp.status_code, str(data)[:200])
-                return ""
-            choices = data.get("choices", [])
-            if choices:
-                content = choices[0].get("message", {}).get("content", "")
-                if not content:
-                    logger.warning("API empty content: %s", str(data)[:200])
-                return content
-        except Exception as e:
-            logger.warning("API exception: %s", e)
+        last_err = ""
+        for attempt in range(retries + 1):
+            try:
+                resp = await self._client.post(f"{self._base_url}/chat/completions", headers=headers, json=payload)
+                data = resp.json()
+                if resp.status_code != 200:
+                    last_err = f"API {resp.status_code}: {str(data)[:120]}"
+                    logger.warning("API %d: %s", resp.status_code, str(data)[:200])
+                else:
+                    choices = data.get("choices", [])
+                    if choices:
+                        content = choices[0].get("message", {}).get("content", "")
+                        if content:
+                            return content
+                        last_err = "empty content"
+                        logger.warning("API empty content (attempt %d/%d)", attempt + 1, retries + 1)
+                    else:
+                        last_err = "no choices"
+            except Exception as e:
+                last_err = str(e)
+                logger.warning("API exception: %s", e)
+            if attempt < retries:
+                await asyncio.sleep(1.5 * (attempt + 1))
+        logger.warning("API 调用最终失败: %s", last_err)
         return ""
 
     async def decide(self, inp: AIInput) -> Optional[Signal]:
@@ -171,6 +183,10 @@ class AINativeDecisionMaker:
             + lesson_str
             + "\n输出JSON:\n"
             '{"action":"BUY/SELL/HOLD","stop_loss":x,"take_profit":x,"reason":"..."}\n'
+            "决策前先在内心快速推理(不输出思考过程, 只输出JSON):\n"
+            "  ① 方向: 5m与1H是否同向? 同向才考虑入场\n"
+            "  ② 位置: 价格在MA/VWAP/BB什么位置? 是否透支? 追高还是回踩?\n"
+            "  ③ 风险: 止损该放哪(结构位+ATR缓冲)? 盈亏比是否≥1?\n"
             "HOLD是合法的——但HOLD不是默认答案。\n"
             "当趋势、动量、量能、大盘环境共振确认时, 应该果断入场抓住机会。\n"
             "机会出现时犹豫不决、总是观望同样是错误。\n"
@@ -199,9 +215,10 @@ class AINativeDecisionMaker:
             "  5. 不追已大幅透支的行情; 入场时若当日已涨/跌超5%, 只做回踩不追高\n"
         )
         raw = await self._call(
-            system="你是美股交易分析师。输出JSON，不要思考，直接给结果。",
+            system="你是美股日内交易分析师。决策前在内心完成推理, 只输出JSON结果。",
             prompt=prompt, model=self._model,
             temp=0.3, max_tokens=4000, json_mode=False,
+            retries=2,  # 开仓低频高价值, 空返回重试2次
         )
         return self._parse_json(raw)
 
