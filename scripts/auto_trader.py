@@ -198,8 +198,7 @@ class AutoTrader:
             self._last_full_scan = now
         else:
             candidates = self._filter_by_price_change(quotes)
-            if not candidates:
-                return
+            # 注意: 无价格变动时不提前return — 管仓必须每轮执行
 
         from src.storage.kline_aggregator import KlineAggregator
         agg = KlineAggregator()
@@ -335,11 +334,15 @@ class AutoTrader:
                 except Exception as e:
                     logger.error("管仓 %s 失败: %s", pos.symbol, e)
 
-        # ── AI 原生扫描开仓 ──
-        symbols_to_scan = self._rank_symbols(candidates, rich_quotes)[:10]
-        logger.info("AI 原生扫描 %d 品种 | 大盘: %s",
-                   len(symbols_to_scan),
-                   " ".join(f"{k}{v:+.1f}%" for k,v in bench.items()))
+        # ── AI 原生扫描开仓 (仅当有候选品种时) ──
+        symbols_to_scan = []
+        if candidates:
+            symbols_to_scan = self._rank_symbols(candidates, rich_quotes)[:10]
+            logger.info("AI 原生扫描 %d 品种 | 大盘: %s",
+                       len(symbols_to_scan),
+                       " ".join(f"{k}{v:+.1f}%" for k,v in bench.items()))
+        else:
+            logger.info("无价格变动候选, 本轮仅管仓")
 
         seen = set(p.symbol for p in positions)
         for symbol in symbols_to_scan:
