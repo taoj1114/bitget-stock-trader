@@ -149,6 +149,15 @@ BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]
 HOT_SYMBOLS = ["NVDA", "TSLA", "META", "AMZN", "MSFT", "AAPL", "GOOGL",
                "PLTR", "AMD", "COIN", "MSTR", "SMCI", "AVGO", "NFLX", "ARM"]
 
+# ETF 黑名单: 品种池拒绝 ETF 产品 (yfinance quoteType==ETF 识别, 50个)
+ETF_BLACKLIST = {
+    "AAPU", "AMZU", "BITO", "BOTZ", "CONL", "DFEN", "DRAM", "EUV", "EWH",
+    "EWJ", "EWT", "EWY", "EWZ", "GGLL", "IBB", "INDA", "INTW", "IWM", "KORU",
+    "KSTR", "KWEB", "METU", "MSFU", "MSTU", "MUU", "MVLL", "NVDL", "QQQ", "RAM",
+    "SGOV", "SKDD", "SMH", "SNXX", "SOXL", "SOXS", "SOXX", "SPY", "SQQQ", "TBT",
+    "TMF", "TQQQ", "TSLL", "TZA", "UVXY", "VOO", "XBI", "XLE", "XLK", "XLU", "XLV",
+}
+
 
 class AutoTrader:
 
@@ -434,9 +443,10 @@ class AutoTrader:
                 except Exception as e:
                     logger.error("管仓 %s 失败: %s", pos.symbol, e)
 
-        # ── AI 原生扫描开仓 (仅当有候选品种时) ──
+        # ── AI 原生扫描开仓 (仅当有候选品种时, 排除ETF) ──
         symbols_to_scan = []
         if candidates:
+            candidates = [s for s in candidates if s not in ETF_BLACKLIST]
             # 扫描优先级: 白名单热门股优先(最多5个) + 热度股补充
             hot_cands = [s for s in candidates if s in HOT_SYMBOLS][:5]
             rest = [s for s in candidates if s not in HOT_SYMBOLS]
@@ -619,9 +629,11 @@ class AutoTrader:
                 logger.warning("全市场合约不足 (%d)，保持原池", len(contracts))
                 return
 
-            # 批量拉行情，按成交量+涨跌排序
+            # 批量拉行情，按成交量+涨跌排序 (排除ETF黑名单)
             rich = {}
             for c in contracts[:80]:  # 全市场美股合约
+                if c.symbol in ETF_BLACKLIST:
+                    continue  # 拒绝 ETF 产品
                 try:
                     q = await self._market.get_quote(c.symbol)
                     if q and q.mark_price > 0 and (q.volume_24h or 0) > 0:
