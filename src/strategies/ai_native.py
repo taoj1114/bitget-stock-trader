@@ -511,14 +511,17 @@ class AINativeDecisionMaker:
         if not is_buy and (float(sl) <= entry or float(tp) >= entry):
             return None
 
-        # ── 代码级安全防线 (LLM可能不遵守prompt, 这里硬拦截) ──
+        # ── 代码级安全防线 (LLM可能不遵守prompt, 这里硬拦截/修正) ──
         sl_dist = abs(float(sl) - entry) / entry * 100
         tp_dist = abs(float(tp) - entry) / entry * 100
-        # 1. 盈亏比必须 ≥1 (亏的比赚的多就拒绝)
+        # 1. 盈亏比<1 → 自动修正TP到至少1:1 (方向/SL保留AI的, 只修参数)
+        #    原因: AI方向判断对但TP设太近会被拒单, 修正后符合日内1:1策略
         if tp_dist < sl_dist:
-            logger.warning("拒绝 %s: 盈亏比 %.2f < 1 (SL=%.2f%% TP=%.2f%%)",
-                          inp.symbol, tp_dist / max(sl_dist, 1e-9), sl_dist, tp_dist)
-            return None
+            fixed_tp = entry + (entry - float(sl)) if is_buy else entry - (float(sl) - entry)
+            logger.info("修正 %s: 盈亏比 %.2f <1 → TP $%.2f→$%.2f (自动修正至1:1)",
+                       inp.symbol, tp_dist / max(sl_dist, 1e-9), float(tp), fixed_tp)
+            tp = fixed_tp
+            tp_dist = abs(float(tp) - entry) / entry * 100
         # 2. 极端波动(>15%)禁止追涨/追跌 — 让AI自主判断正常波动(不再一刀切8%)
         if abs(inp.change_pct) > 15.0:
             logger.warning("拒绝 %s: 当日 %+.1f%% 极端波动, 禁止追涨/追跌 (等回踩/反抽)",
