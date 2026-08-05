@@ -126,10 +126,13 @@ class RealExecutor:
         if resp.get("code") == "00000":
             logger.info("✅ 真实开仓: %s %s qty=%.1f", signal.symbol, side, quantity)
             pos_id = f"real_{signal.symbol}"  # 统一 id = real_{symbol}
-            # 设置止盈止损
+            # 设置止盈止损 (失败时补挂一次, 仍失败则立即平仓防裸奔)
             hold_side = "long" if side == "buy" else "short"
+            sl_ok = True
+            tp_ok = True
+            sl_tpsl = "sell" if side == "buy" else "buy"
+            tp_tpsl = sl_tpsl
             if signal.stop_loss > 0:
-                sl_tpsl = "sell" if side == "buy" else "buy"
                 try:
                     sl_resp = await self._trader.place_stop_order(
                         signal.symbol, hold_side, sl_tpsl,
@@ -137,11 +140,12 @@ class RealExecutor:
                     if sl_resp.get("code") == "00000":
                         logger.info("  ✅ 止损: %s @ $%.2f", signal.symbol, signal.stop_loss)
                     else:
-                        logger.warning("  ⚠️ 止损失败: %s", sl_resp.get("msg",""))
+                        sl_ok = False
+                        logger.warning("  ⚠️ 止损失败: %s", sl_resp.get("msg", ""))
                 except Exception as e:
+                    sl_ok = False
                     logger.warning("  ⚠️ 止损异常: %s", e)
             if signal.take_profits and signal.take_profits[0] > 0:
-                tp_tpsl = "sell" if side == "buy" else "buy"
                 try:
                     tp_resp = await self._trader.place_stop_order(
                         signal.symbol, hold_side, tp_tpsl,
@@ -149,9 +153,35 @@ class RealExecutor:
                     if tp_resp.get("code") == "00000":
                         logger.info("  ✅ 止盈: %s @ $%.2f", signal.symbol, signal.take_profits[0])
                     else:
-                        logger.warning("  ⚠️ 止盈失败: %s", tp_resp.get("msg",""))
+                        tp_ok = False
+                        logger.warning("  ⚠️ 止盈失败: %s", tp_resp.get("msg", ""))
                 except Exception as e:
+                    tp_ok = False
                     logger.warning("  ⚠️ 止盈异常: %s", e)
+            # SL/TP 任一挂单失败 → 补挂一次 (限价重试), 仍失败立即平仓防裸奔
+            if not (sl_ok and tp_ok):
+                logger.warning("  ⚠️ %s SL/TP挂单异常, 尝试补挂...", signal.symbol)
+                try:
+                    if not sl_ok and signal.stop_loss > 0:
+                        r = await self._trader.place_stop_order(
+                            signal.symbol, hold_side, sl_tpsl,
+                            signal.stop_loss, quantity, "pos_loss")
+                        sl_ok = r.get("code") == "00000"
+                    if not tp_ok and signal.take_profits and signal.take_profits[0] > 0:
+                        r = await self._trader.place_stop_order(
+                            signal.symbol, hold_side, tp_tpsl,
+                            signal.take_profits[0], quantity, "pos_profit")
+                        tp_ok = r.get("code") == "00000"
+                except Exception:
+                    pass
+            if not (sl_ok and tp_ok):
+                logger.error("  ❌ %s SL/TP补挂仍失败 → 立即平仓防裸奔", signal.symbol)
+                try:
+                    await self._trader.close_position(signal.symbol, hold_side)
+                except Exception as e:
+                    logger.error("  紧急平仓失败 %s: %s", signal.symbol, e)
+                return OrderResult(status="REJECTED",
+                                 reason=f"SL/TP挂单失败, 已紧急平仓 {signal.symbol}")
 
             self._positions[pos_id] = Position(
                 id=pos_id, symbol=signal.symbol,
@@ -192,6 +222,13 @@ class RealExecutor:
 
         if resp.get("code") == "00000":
             logger.info("✅ 真实平仓: %s %s (%s)", symbol, side, reason)
+            # 平仓后取消托管 SL/TP 计划单 (防幽灵单下次触发)
+            if side:
+                try:
+                    for pt in ("pos_loss", "pos_profit"):
+                        await self._trader.cancel_plan_order(symbol, side, pt)
+                except Exception as e:
+                    logger.warning("平仓后取消计划单失败 %s: %s", symbol, e)
             # 记录平仓 (用持仓浮盈作为 PnL)
             try:
                 if pos:

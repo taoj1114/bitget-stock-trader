@@ -207,6 +207,22 @@ class BitgetTrader:
         }
         return await self._request("POST", "/api/v2/mix/order/place-tpsl-order", body)
 
+    async def cancel_plan_order(
+        self,
+        symbol: str,
+        hold_side: str,     # long / short
+        plan_type: str = "pos_loss",  # pos_loss / pos_profit
+    ) -> dict:
+        """取消在途止盈止损计划单 (更新SL/TP前必须先取消旧单, 否则旧单残留触发)。"""
+        body = {
+            "symbol": f"{symbol}USDT",
+            "productType": "USDT-FUTURES",
+            "marginCoin": "USDT",
+            "holdSide": hold_side,
+            "planType": plan_type,
+        }
+        return await self._request("POST", "/api/v2/mix/order/cancel-plan-order", body)
+
     # ═══ 查询 ═══════════════════════════════════
 
     async def get_positions(self, symbol: str = "") -> list[RealPosition]:

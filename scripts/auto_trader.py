@@ -631,11 +631,30 @@ class AutoTrader:
                         except Exception: pass
                         continue
 
-                    # C: 周末/深夜闭市 → 只检查不调整 SL/TP
+                    # C: 周末/深夜闭市 → 只允许"收紧"方向调整 (防利润回吐), 不允许放宽
                     session = get_us_session()
                     if session in ("weekend", "closed"):
-                        logger.info("%s %s | %s → 管仓检查, 不调整SL/TP",
-                                   pos.symbol, pos.side, session)
+                        # 用 AI 的 HOLD 信号中 SL/TP 判断: 只收紧不平仓
+                        if sig.action == "HOLD" and sig.stop_loss > 0:
+                            cur_sl = pos.stop_loss or 0
+                            new_sl = sig.stop_loss
+                            # 多头: 新SL >= 旧SL = 上移=收紧; 空头: 新SL <= 旧SL = 下移=收紧
+                            tighten = (new_sl > cur_sl) if pos.side == "LONG" else (new_sl < cur_sl)
+                            if cur_sl > 0 and tighten and abs(new_sl - cur_sl) / max(cur_sl, 1e-9) > 0.002:
+                                hold = "long" if pos.side == "LONG" else "short"
+                                tpsl = "sell" if hold == "long" else "buy"
+                                try:
+                                    try:
+                                        await self._executor._trader.cancel_plan_order(
+                                            pos.symbol, hold, "pos_loss")
+                                    except Exception:
+                                        pass
+                                    await self._executor._trader.place_stop_order(
+                                        pos.symbol, hold, tpsl, new_sl, pos.quantity, "pos_loss")
+                                    logger.info("%s %s | %s → 深夜收紧SL→$%.2f (防回吐)",
+                                               pos.symbol, pos.side, session, new_sl)
+                                except Exception as e:
+                                    logger.warning("深夜收紧SL失败 %s: %s", pos.symbol, e)
                         continue
 
                     # HOLD + 动态更新止盈止损 (A: 仅差异>0.5%才重挂)
@@ -654,9 +673,20 @@ class AutoTrader:
                         tpsl = "sell" if hold == "long" else "buy"
                         try:
                             if sl_changed:
+                                # 先取消旧单, 再挂新单 (防旧SL残留触发)
+                                try:
+                                    await self._executor._trader.cancel_plan_order(
+                                        pos.symbol, hold, "pos_loss")
+                                except Exception:
+                                    pass
                                 await self._executor._trader.place_stop_order(
                                     pos.symbol, hold, tpsl, new_sl, pos.quantity, "pos_loss")
                             if tp_changed:
+                                try:
+                                    await self._executor._trader.cancel_plan_order(
+                                        pos.symbol, hold, "pos_profit")
+                                except Exception:
+                                    pass
                                 await self._executor._trader.place_stop_order(
                                     pos.symbol, hold, tpsl, new_tp, pos.quantity, "pos_profit")
                             logger.info("%s SL→$%.2f TP→$%.2f | %s",
