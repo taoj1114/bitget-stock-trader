@@ -399,6 +399,88 @@ class AutoTrader:
         except Exception as e:
             logger.warning("启动对账失败: %s", e)
 
+    async def _scan_symbol_ai(self, symbol: str, bench: dict):
+        """并发扫描单个品种: 采集数据 → 构建AI输入 → AI决策。
+
+        返回 (symbol, sig, ind_1h, regime, q) 或 (symbol, None, ...) — 供 run_once 串行执行。
+        """
+        try:
+            k_1h = await self._market.get_klines(symbol, "1H", 500)
+            k_5m = await self._market.get_klines(symbol, "5m", 500)
+            q = await self._market.get_quote(symbol)
+            if not q or len(k_1h) < 30:
+                return None
+            # K线落库 (实时数据追加: 5m + 合成15m + 1H)
+            try:
+                self._kline_store.upsert_batch(symbol, _kline_dicts(k_1h), "1H")
+                self._kline_store.upsert_batch(symbol, _kline_dicts(k_5m), "5m")
+                self._kline_store.upsert_batch(symbol, _aggregate_15m(k_5m), "15m")
+            except Exception:
+                pass
+            ind_1h = self._tech.calculate(k_1h)
+            regime = self._regime_detector.detect(k_1h)
+            ind_5m_raw = None
+            if len(k_5m) >= 30:
+                i5 = self._tech.calculate(k_5m)
+                r5 = self._regime_detector.detect(k_5m)
+                ind_5m_raw = dict(rsi=i5.rsi14, ma10=i5.ma10, ma30=i5.ma30,
+                                  macd=i5.macd, atr=i5.atr14,
+                                  adx=r5.adx, regime=r5.regime,
+                                  bb_position=_bb_pos(i5, q.mark_price),
+                                  volume_ratio=i5.volume_ratio,
+                                  vwap=i5.vwap)
+
+            # 新闻降级: 仅异常波动(±5%)时注入, 否则空 (避免噪声)
+            news_items = []
+            news_titles = []
+            if abs(q.change_pct * 100) >= 5.0:
+                try:
+                    news_items = await self._news_registry.fetch_news(symbol, max_results=5)
+                except Exception:
+                    pass
+                news_titles = [item.title for item in news_items[:5]]
+            if news_titles:
+                logger.info("%s 异常波动 %+.1f%% → 注入新闻 %d 条",
+                           symbol, q.change_pct * 100, len(news_titles))
+
+            # 盘口实时压力 (orderbook 前10档)
+            ob_str = ""
+            try:
+                book = await self._market.get_order_book(symbol, limit=10)
+                ob_str = _pressure_str(book)
+            except Exception:
+                pass
+            # 走势形状分析 (5m K线轨迹)
+            trend_str = _trend_shape(k_5m)
+
+            ai_inp = AIInput(
+                symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
+                klines_1h=k_1h, klines_4h=[], klines_1d=[],
+                ind_1h=dict(rsi=ind_1h.rsi14, ma10=ind_1h.ma10, ma30=ind_1h.ma30,
+                           macd=ind_1h.macd, atr=ind_1h.atr14,
+                           adx=regime.adx, regime=regime.regime,
+                           bb_position=_bb_pos(ind_1h, q.mark_price),
+                           volume_ratio=ind_1h.volume_ratio,
+                           vwap=ind_1h.vwap),
+                ind_4h=None, ind_1d=None,
+                ind_5m=ind_5m_raw,
+                orderbook=ob_str,
+                trend_shape=trend_str,
+                account_status=self._account_status_str(),
+                news=news_titles, news_summary="; ".join(news_titles[:3]),
+                bench=bench, open_interest=q.open_interest,
+                funding_rate=getattr(q, 'funding_rate', 0) or 0,
+                volume_24h=q.volume_24h,
+                session=get_us_session(),
+                lessons=self._lessons,
+                rules=self._rules,
+                history=self._memory.get_symbol_history(symbol, 3))
+            sig = await self._ai_decider.decide(ai_inp)
+            return (symbol, sig, ind_1h, regime, q)
+        except Exception as e:
+            logger.error("AI扫描 %s 失败: %s", symbol, e)
+            return None
+
     async def run_once(self):
         logger.info("=== AutoTrader 单次扫描 ===")
 
@@ -610,77 +692,19 @@ class AutoTrader:
             logger.info("本轮仅管仓")
 
         seen = set(p.symbol for p in positions)
-        for symbol in symbols_to_scan:
-            if symbol in seen: continue
-            seen.add(symbol)
+        to_scan = [s for s in symbols_to_scan if s not in seen]
+
+        # 并发AI决策: 每品种独立采集数据+调用AI (总耗时≈最慢单个, 而非串行累加)
+        results = await asyncio.gather(
+            *(self._scan_symbol_ai(s, bench) for s in to_scan),
+            return_exceptions=True)
+
+        # 串行执行开仓 (防并发超持仓上限/同品种重复)
+        for r in results:
+            if isinstance(r, Exception) or r is None:
+                continue
+            symbol, sig, ind_1h, regime, q = r
             try:
-                k_1h = await self._market.get_klines(symbol, "1H", 500)
-                k_5m = await self._market.get_klines(symbol, "5m", 500)
-                q = await self._market.get_quote(symbol)
-                if not q or len(k_1h) < 30: continue
-                # K线落库 (实时数据追加: 5m + 合成15m + 1H)
-                try:
-                    self._kline_store.upsert_batch(symbol, _kline_dicts(k_1h), "1H")
-                    self._kline_store.upsert_batch(symbol, _kline_dicts(k_5m), "5m")
-                    self._kline_store.upsert_batch(symbol, _aggregate_15m(k_5m), "15m")
-                except Exception: pass
-                ind_1h = self._tech.calculate(k_1h)
-                regime = self._regime_detector.detect(k_1h)
-                ind_5m_raw = None
-                if len(k_5m) >= 30:
-                    i5 = self._tech.calculate(k_5m)
-                    r5 = self._regime_detector.detect(k_5m)
-                    ind_5m_raw = dict(rsi=i5.rsi14, ma10=i5.ma10, ma30=i5.ma30,
-                                      macd=i5.macd, atr=i5.atr14,
-                                      adx=r5.adx, regime=r5.regime,
-                                      bb_position=_bb_pos(i5, q.mark_price),
-                                      volume_ratio=i5.volume_ratio,
-                                      vwap=i5.vwap)
-
-                # 新闻降级: 仅异常波动(±5%)时注入, 否则空 (避免噪声)
-                news_items = []
-                news_titles = []
-                if abs(q.change_pct * 100) >= 5.0:
-                    try:
-                        news_items = await self._news_registry.fetch_news(symbol, max_results=5)
-                    except Exception: pass
-                    news_titles = [item.title for item in news_items[:5]]
-                if news_titles:
-                    logger.info("%s 异常波动 %+.1f%% → 注入新闻 %d 条",
-                               symbol, q.change_pct * 100, len(news_titles))
-
-                # 盘口实时压力 (orderbook 前10档)
-                ob_str = ""
-                try:
-                    book = await self._market.get_order_book(symbol, limit=10)
-                    ob_str = _pressure_str(book)
-                except Exception: pass
-                # 走势形状分析 (5m K线轨迹)
-                trend_str = _trend_shape(k_5m)
-
-                ai_inp = AIInput(
-                    symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
-                    klines_1h=k_1h, klines_4h=[], klines_1d=[],
-                    ind_1h=dict(rsi=ind_1h.rsi14, ma10=ind_1h.ma10, ma30=ind_1h.ma30,
-                               macd=ind_1h.macd, atr=ind_1h.atr14,
-                               adx=regime.adx, regime=regime.regime,
-                               bb_position=_bb_pos(ind_1h, q.mark_price),
-                               volume_ratio=ind_1h.volume_ratio,
-                               vwap=ind_1h.vwap),
-                    ind_4h=None, ind_1d=None,
-                    ind_5m=ind_5m_raw,
-                    orderbook=ob_str,
-                    trend_shape=trend_str,
-                    account_status=self._account_status_str(),
-                    news=news_titles, news_summary="; ".join(news_titles[:3]),
-                    bench=bench, open_interest=q.open_interest,
-                    funding_rate=getattr(q, 'funding_rate', 0) or 0,
-                    volume_24h=q.volume_24h,
-                    session=get_us_session(),
-                    lessons=self._lessons,
-                    rules=self._rules,
-                    history=self._memory.get_symbol_history(symbol, 3))
-                sig = await self._ai_decider.decide(ai_inp)
                 if sig:
                     logger.info("%s: AI=%s SL=$%.2f TP=$%.2f",
                                symbol, sig.action, sig.stop_loss, sig.take_profits[0])
@@ -703,7 +727,7 @@ class AutoTrader:
                         symbol, "HOLD", "AI判断无机会", get_us_session(),
                         q.mark_price, ind_1h.rsi14, regime.adx, regime.regime)
             except Exception as e:
-                logger.error("AI扫描 %s 失败: %s", symbol, e)
+                logger.error("AI执行 %s 失败: %s", symbol, e)
 
         self._executor._save_state()
         self._last_prices.update(quotes)

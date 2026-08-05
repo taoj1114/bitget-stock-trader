@@ -4,7 +4,7 @@
 数据: 500x1H + 4H/1D + 大盘 + 新闻 + OI/费率
 """
 
-import asyncio, json, logging, os, re
+import asyncio, json, logging, os, re, time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -72,6 +72,12 @@ class AIInput:
 class AINativeDecisionMaker:
     """AI 原生决策器。模型/API 可配置 (config.yaml deepseek 段)。"""
 
+    # AI 熔断器: 连续失败超阈值 → 暂停调用 (防API宕机时雪崩重试)
+    _fail_streak = 0
+    _fail_paused_until = 0.0
+    FAIL_THRESHOLD = 5     # 连续5次失败
+    FAIL_PAUSE_SECONDS = 300  # 暂停5分钟
+
     def __init__(self, model: str = "deepseek-v4-flash",
                  base_url: str = "https://api.deepseek.com",
                  api_key: str = ""):
@@ -80,15 +86,44 @@ class AINativeDecisionMaker:
         self._base_url = base_url
         self._model = model
 
+    def _circuit_open(self) -> bool:
+        """熔断检查: 连续失败暂停期内 → True (跳过调用)。"""
+        if AINativeDecisionMaker._fail_streak >= AINativeDecisionMaker.FAIL_THRESHOLD:
+            if time.time() > AINativeDecisionMaker._fail_paused_until:
+                # 暂停到期, 重置计数
+                AINativeDecisionMaker._fail_streak = 0
+                logger.info("AI熔断暂停到期, 恢复调用")
+            else:
+                return True
+        return False
+
+    def _record_success(self):
+        AINativeDecisionMaker._fail_streak = 0
+
+    def _record_failure(self):
+        AINativeDecisionMaker._fail_streak += 1
+        if AINativeDecisionMaker._fail_streak == AINativeDecisionMaker.FAIL_THRESHOLD:
+            AINativeDecisionMaker._fail_paused_until = \
+                time.time() + AINativeDecisionMaker.FAIL_PAUSE_SECONDS
+            logger.warning("AI连续失败 %d 次 → 熔断暂停 %d 秒",
+                          AINativeDecisionMaker.FAIL_THRESHOLD,
+                          AINativeDecisionMaker.FAIL_PAUSE_SECONDS)
+
     async def _call(self, system: str, prompt: str, model: str,
                     temp: float, max_tokens: int, json_mode: bool = False,
                     retries: int = 0) -> str:
-        """调用模型。retries>0 时空返回/异常时重试。"""
+        """调用模型。retries>0 时空返回/异常时重试。熔断保护防雪崩。"""
         if not self._api_key:
             logger.warning("API key 未配置")
             return ""
+        if self._circuit_open():
+            logger.warning("AI熔断中, 跳过调用 (暂停至 %ds)",
+                          int(AINativeDecisionMaker._fail_paused_until - time.time()))
+            return ""
         if not self._client:
-            self._client = httpx.AsyncClient(timeout=30)  # 单次调用30s上限, 防全池扫描积压
+            # 智能超时: 连接10s(网络问题快速失败) + 读60s(容忍慢响应)
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(60.0, connect=10.0))
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self._api_key}"}
         payload = {
             "model": model,
@@ -109,11 +144,16 @@ class AINativeDecisionMaker:
                 if resp.status_code != 200:
                     last_err = f"API {resp.status_code}: {str(data)[:120]}"
                     logger.warning("API %d: %s", resp.status_code, str(data)[:200])
+                    # 4xx 是请求问题, 重试无意义 → 直接失败
+                    if 400 <= resp.status_code < 500:
+                        self._record_failure()
+                        return ""
                 else:
                     choices = data.get("choices", [])
                     if choices:
                         content = choices[0].get("message", {}).get("content", "")
                         if content:
+                            self._record_success()
                             return content
                         last_err = "empty content"
                         logger.warning("API empty content (attempt %d/%d)", attempt + 1, retries + 1)
@@ -124,6 +164,7 @@ class AINativeDecisionMaker:
                 logger.warning("API exception: %s", e)
             if attempt < retries:
                 await asyncio.sleep(1.5 * (attempt + 1))
+        self._record_failure()
         logger.warning("API 调用最终失败: %s", last_err)
         return ""
 
