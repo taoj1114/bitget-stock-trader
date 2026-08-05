@@ -413,32 +413,32 @@ class AutoTrader:
         try:
             k_1h = await self._market.get_klines(symbol, "1H", 500)
             k_5m = await self._market.get_klines(symbol, "5m", 500)
-            k_1d = await self._market.get_klines(symbol, "1D", 200)  # 日线: 定大方向
+            k_4h = await self._market.get_klines(symbol, "4H", 200)  # 4H: 定中期方向 (比日线灵敏)
             q = await self._market.get_quote(symbol)
             if not q or len(k_1h) < 30:
                 return None
-            # K线落库 (实时数据追加: 5m + 合成15m + 1H + 1D)
+            # K线落库 (实时数据追加: 5m + 合成15m + 1H + 4H)
             try:
                 self._kline_store.upsert_batch(symbol, _kline_dicts(k_1h), "1H")
                 self._kline_store.upsert_batch(symbol, _kline_dicts(k_5m), "5m")
                 self._kline_store.upsert_batch(symbol, _aggregate_15m(k_5m), "15m")
-                self._kline_store.upsert_batch(symbol, _kline_dicts(k_1d), "1D")
+                self._kline_store.upsert_batch(symbol, _kline_dicts(k_4h), "4H")
             except Exception:
                 pass
             ind_1h = self._tech.calculate(k_1h)
             regime = self._regime_detector.detect(k_1h)
-            # 日线指标 (趋势方向权威来源)
-            ind_1d = None
-            if len(k_1d) >= 30:
-                i1d = self._tech.calculate(k_1d)
-                r1d = self._regime_detector.detect(k_1d)
-                ind_1d = dict(rsi=i1d.rsi14, ma10=i1d.ma10, ma30=i1d.ma30,
-                              macd=i1d.macd, macd_cross=_macd_cross(i1d),
-                              atr=i1d.atr14,
-                              adx=r1d.adx, regime=r1d.regime,
-                              bb_position=_bb_pos(i1d, q.mark_price),
-                              volume_ratio=i1d.volume_ratio,
-                              vwap=i1d.vwap)
+            # 4H 指标 (中期趋势方向权威来源 — 美股波动上升, 日线滞后)
+            ind_4h = None
+            if len(k_4h) >= 30:
+                i4h = self._tech.calculate(k_4h)
+                r4h = self._regime_detector.detect(k_4h)
+                ind_4h = dict(rsi=i4h.rsi14, ma10=i4h.ma10, ma30=i4h.ma30,
+                              macd=i4h.macd, macd_cross=_macd_cross(i4h),
+                              atr=i4h.atr14,
+                              adx=r4h.adx, regime=r4h.regime,
+                              bb_position=_bb_pos(i4h, q.mark_price),
+                              volume_ratio=i4h.volume_ratio,
+                              vwap=i4h.vwap)
             ind_5m_raw = None
             if len(k_5m) >= 30:
                 i5 = self._tech.calculate(k_5m)
@@ -477,7 +477,7 @@ class AutoTrader:
 
             ai_inp = AIInput(
                 symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
-                klines_1h=k_1h, klines_4h=[], klines_1d=k_1d,
+                klines_1h=k_1h, klines_4h=k_4h, klines_1d=[],
                 ind_1h=dict(rsi=ind_1h.rsi14, ma10=ind_1h.ma10, ma30=ind_1h.ma30,
                            macd=ind_1h.macd, macd_cross=_macd_cross(ind_1h),
                            atr=ind_1h.atr14,
@@ -485,7 +485,7 @@ class AutoTrader:
                            bb_position=_bb_pos(ind_1h, q.mark_price),
                            volume_ratio=ind_1h.volume_ratio,
                            vwap=ind_1h.vwap),
-                ind_4h=None, ind_1d=ind_1d,
+                ind_4h=ind_4h, ind_1d=None,
                 ind_5m=ind_5m_raw,
                 orderbook=ob_str,
                 trend_shape=trend_str,
@@ -565,30 +565,30 @@ class AutoTrader:
                 try:
                     k_1h = await self._market.get_klines(pos.symbol, "1H", 500)
                     k_5m = await self._market.get_klines(pos.symbol, "5m", 500)
-                    k_1d = await self._market.get_klines(pos.symbol, "1D", 200)  # 日线: 定大方向
+                    k_4h = await self._market.get_klines(pos.symbol, "4H", 200)  # 4H: 定中期方向
                     q = await self._market.get_quote(pos.symbol)
                     if not q or len(k_1h) < 30: continue
-                    # K线落库 (实时数据追加: 5m + 合成15m + 1H + 1D)
+                    # K线落库 (实时数据追加: 5m + 合成15m + 1H + 4H)
                     try:
                         self._kline_store.upsert_batch(pos.symbol, _kline_dicts(k_1h), "1H")
                         self._kline_store.upsert_batch(pos.symbol, _kline_dicts(k_5m), "5m")
                         self._kline_store.upsert_batch(pos.symbol, _aggregate_15m(k_5m), "15m")
-                        self._kline_store.upsert_batch(pos.symbol, _kline_dicts(k_1d), "1D")
+                        self._kline_store.upsert_batch(pos.symbol, _kline_dicts(k_4h), "4H")
                     except Exception: pass
                     ind = self._tech.calculate(k_1h)
                     reg = self._regime_detector.detect(k_1h)
-                    # 日线指标 (管仓也看日线: 持仓方向是否与日线一致)
-                    ind_1d = None
-                    if len(k_1d) >= 30:
-                        i1d = self._tech.calculate(k_1d)
-                        r1d = self._regime_detector.detect(k_1d)
-                        ind_1d = dict(rsi=i1d.rsi14, ma10=i1d.ma10, ma30=i1d.ma30,
-                                      macd=i1d.macd, macd_cross=_macd_cross(i1d),
-                                      atr=i1d.atr14,
-                                      adx=r1d.adx, regime=r1d.regime,
-                                      bb_position=_bb_pos(i1d, q.mark_price),
-                                      volume_ratio=i1d.volume_ratio,
-                                      vwap=i1d.vwap)
+                    # 4H 指标 (管仓也看4H: 持仓方向是否与中期趋势一致)
+                    ind_4h = None
+                    if len(k_4h) >= 30:
+                        i4h = self._tech.calculate(k_4h)
+                        r4h = self._regime_detector.detect(k_4h)
+                        ind_4h = dict(rsi=i4h.rsi14, ma10=i4h.ma10, ma30=i4h.ma30,
+                                      macd=i4h.macd, macd_cross=_macd_cross(i4h),
+                                      atr=i4h.atr14,
+                                      adx=r4h.adx, regime=r4h.regime,
+                                      bb_position=_bb_pos(i4h, q.mark_price),
+                                      volume_ratio=i4h.volume_ratio,
+                                      vwap=i4h.vwap)
                     ind5 = None
                     if len(k_5m) >= 30:
                         i5 = self._tech.calculate(k_5m)
@@ -619,7 +619,7 @@ class AutoTrader:
                     trend_str = _trend_shape(k_5m)
                     ai_inp = AIInput(
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
-                        klines_1h=k_1h, klines_4h=[], klines_1d=k_1d,
+                        klines_1h=k_1h, klines_4h=k_4h, klines_1d=[],
                         ind_1h=dict(rsi=ind.rsi14, ma10=ind.ma10, ma30=ind.ma30,
                                    macd=ind.macd, macd_cross=_macd_cross(ind),
                                    atr=ind.atr14, adx=reg.adx,
@@ -627,7 +627,7 @@ class AutoTrader:
                                    bb_position=_bb_pos(ind, q.mark_price),
                                    volume_ratio=ind.volume_ratio,
                                    vwap=ind.vwap),
-                        ind_4h=None, ind_1d=ind_1d,
+                        ind_4h=ind_4h, ind_1d=None,
                         ind_5m=ind5,
                         orderbook=ob_str,
                         trend_shape=trend_str,
