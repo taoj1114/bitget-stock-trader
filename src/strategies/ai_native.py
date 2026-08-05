@@ -234,6 +234,9 @@ class AINativeDecisionMaker:
             + "\n输出JSON:\n"
             '{"action":"BUY/SELL/HOLD","stop_loss":x,"take_profit":x,"reason":"..."}\n'
             "决策前先在内心快速推理(不输出思考过程, 只输出JSON):\n"
+            "  0. 先找4H反转K线! (最高优先级): 走势行里有没有⚠️反转K线?\n"
+            "     - 找到后: 用它的价格位置定方向——高位=开空, 低位=开多, 顺反转方向!\n"
+            "     - 没有反转K线: 才进入下面的4H趋势判断\n"
             "  ① 4H方向(权威!): 4H regime 是 trend_up / trend_down / range_bound?\n"
             "     ADX 多少? 上涨/下跌能力足不足? —— 永远不跟4H趋势作对!\n"
             "     (美股波动上升: 日线滞后失真, 用4H看中期趋势最准)\n"

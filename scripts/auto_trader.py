@@ -119,19 +119,29 @@ def _holding_hours(pos) -> float:
 
 
 def _reversal_kline(klines, lookback: int = 10) -> str:
-    """4H反转K线识别 (用户定义形态, 信号极强)。
+    """4H反转K线识别 (用户核心形态: 找到那根反转K线, 用价格位置定方向)。
+
+    核心: 反转K线的"位置"决定方向——
+      - 顶部反转K线: 必须出现在近期高位 (价格贴近近10根最高点)
+        → 开空仓 (顺反转方向)
+      - 底部反转K线: 必须出现在近期低位 (价格贴近近10根最低点)
+        → 开多仓
+
+    形态特征 (用户描述):
+      - 交易量与K线不成正比 (量价背离)
+      - 开盘价和收盘价接近 (小实体)
+      - 最高/最低价波动较大 (长影线)
 
     顶部反转 (→做空):
-      - 前段明显上涨 (最近5根涨>1.5%)
-      - 实体小 (|开-收|/振幅 < 35%: 开收接近)
-      - 长上影或上下影都长 (最高/最低波动大)
-      - 量价背离: 缩量滞涨(量<0.7x) 或 放量长上影(量>1.5x = 抛压)
+      位置: 价格位于近期高位 (距近10根高点 <3%)
+      前段: 最近5根涨>1.5%
+      形态: 小实体(<35%) + 长上影
+      量价背离: 缩量滞涨(量<0.7x) 或 放量长上影(量>1.5x=抛压)
     底部反转 (→做多):
-      - 前段明显下跌 (最近5根跌>1.5%)
-      - 实体小 (开收接近)
-      - 长下影 (最低/最高波动大)
-      - 放量 (量>1.3x = 承接; 跌后放量长下影 = 止跌)
-    持仓逻辑: 反转K线方向入场后持有, 直到出现下一个反向反转K线离场。
+      位置: 价格位于近期低位 (距近10根低点 <3%)
+      前段: 最近5根跌>1.5%
+      形态: 小实体 + 长下影
+      量: 放量 (量>1.3x = 承接)
     """
     try:
         if not klines or len(klines) < 6:
@@ -152,25 +162,33 @@ def _reversal_kline(klines, lookback: int = 10) -> str:
         avg_vol = sum(vols) / len(vols) if vols else 0
         vol_ratio = (float(k.volume or 0) / avg_vol) if avg_vol > 0 else 1.0
 
+        # ── 价格位置 (反转K线在近期波段的位置, 决定方向!) ──
+        window = ks[-10:]
+        win_hi = max(float(x.high) for x in window)
+        win_lo = min(float(x.low) for x in window)
+        pos_pct = (c - win_lo) / (win_hi - win_lo) * 100 if win_hi > win_lo else 50
+        at_top = pos_pct > 85 or (win_hi - c) / win_hi * 100 < 3  # 贴近近10根高点
+        at_bottom = pos_pct < 15 or (c - win_lo) / c * 100 < 3    # 贴近近10根低点
+
         is_small_body = body_ratio < 0.35  # 开收接近
         is_long_shadow = (upper > 0.45 or lower > 0.45 or upper + lower > 0.6)
 
-        # 顶部反转 (上涨后小实体+长影+量价背离)
-        if prev_chg > 1.5 and is_small_body and is_long_shadow:
+        # 顶部反转: 高位 + 上涨后小实体 + 长影 + 量价背离 → 做空
+        if at_top and prev_chg > 1.5 and is_small_body and is_long_shadow:
             if upper > 0.5 and vol_ratio > 1.5:
-                return (f"⚠️4H顶部反转K线(做空信号!): 涨后小实体+放量长上影"
-                        f"(上影{upper:.0%}, 量{vol_ratio:.1f}x=抛压重) → 顺反转做空\n")
+                return (f"⚠️4H顶部反转K线(高位{pos_pct:.0f}%, 做空信号!): 涨后小实体+放量长上影"
+                        f"(上影{upper:.0%}, 量{vol_ratio:.1f}x=抛压重) → 顺反转开空\n")
             if vol_ratio < 0.7 and upper > 0.35:
-                return (f"⚠️4H顶部反转K线(做空信号!): 涨后小实体+缩量滞涨"
-                        f"(上影{upper:.0%}, 量{vol_ratio:.1f}x=买盘枯竭) → 顺反转做空\n")
-        # 底部反转 (下跌后小实体+长下影+放量)
-        if prev_chg < -1.5 and is_small_body and is_long_shadow:
+                return (f"⚠️4H顶部反转K线(高位{pos_pct:.0f}%, 做空信号!): 涨后小实体+缩量滞涨"
+                        f"(上影{upper:.0%}, 量{vol_ratio:.1f}x=买盘枯竭) → 顺反转开空\n")
+        # 底部反转: 低位 + 下跌后小实体 + 长下影 + 放量 → 做多
+        if at_bottom and prev_chg < -1.5 and is_small_body and is_long_shadow:
             if lower > 0.5 and vol_ratio > 1.3:
-                return (f"⚠️4H底部反转K线(做多信号!): 跌后小实体+放量长下影"
-                        f"(下影{lower:.0%}, 量{vol_ratio:.1f}x=承接强) → 顺反转做多\n")
+                return (f"⚠️4H底部反转K线(低位{pos_pct:.0f}%, 做多信号!): 跌后小实体+放量长下影"
+                        f"(下影{lower:.0%}, 量{vol_ratio:.1f}x=承接强) → 顺反转开多\n")
             if lower > 0.45:
-                return (f"⚠️4H底部反转K线(做多信号!): 跌后小实体+长下影"
-                        f"(下影{lower:.0%}) → 顺反转做多\n")
+                return (f"⚠️4H底部反转K线(低位{pos_pct:.0f}%, 做多信号!): 跌后小实体+长下影"
+                        f"(下影{lower:.0%}) → 顺反转开多\n")
         return ""
     except Exception:
         return ""
