@@ -845,6 +845,11 @@ class AutoTrader:
                 except Exception as e:
                     logger.error("管仓 %s 失败: %s", pos.symbol, e)
 
+        # 开仓总开关: OPEN_TRADING=0 时禁止一切新开仓 (管仓/平仓不受影响)
+        if os.environ.get("OPEN_TRADING", "1") == "0":
+            logger.info("🚫 开仓已停止 (OPEN_TRADING=0) — 仅管仓/平仓")
+            return
+
         # ── AI 原生扫描开仓 (仅当有候选品种时, 排除ETF) ──
         symbols_to_scan = []
         if candidates:

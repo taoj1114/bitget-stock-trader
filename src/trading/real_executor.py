@@ -36,6 +36,9 @@ class RealExecutor:
     # ═══ 开仓 ═══════════════════════════════════
 
     async def execute_signal(self, signal: Signal) -> OrderResult:
+        # 开仓总开关: OPEN_TRADING=0 时禁止一切新开仓 (双重保险)
+        if os.environ.get("OPEN_TRADING", "1") == "0":
+            return OrderResult(status="REJECTED", reason="开仓已停止 (OPEN_TRADING=0)")
         if not self._ready:
             return OrderResult(status="REJECTED", reason="Bitget API 未配置")
 
