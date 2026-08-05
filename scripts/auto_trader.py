@@ -291,6 +291,7 @@ class AutoTrader:
         self._last_prices: dict[str, float] = {}
         self._last_full_scan = 0.0
         self._last_symbol_refresh = 0.0
+        self._scan_rotate = 0  # 全池轮换扫描指针 (热度股轮换)
         # 亏损冷却: symbol → 冷却截止时间戳 (重启后从 ai_memory 恢复)
         self._cooldown: dict[str, float] = self._load_cooldowns()
 
@@ -434,12 +435,8 @@ class AutoTrader:
             except Exception as e:
                 logger.warning("K线清理失败: %s", e)
 
-        if now - self._last_full_scan >= FULL_SCAN_INTERVAL:
-            candidates = list(self._symbols)
-            self._last_full_scan = now
-        else:
-            candidates = self._filter_by_price_change(quotes)
-            # 注意: 无价格变动时不提前return — 管仓必须每轮执行
+        # 每轮直接扫描全部池子品种 (不依赖价格变动触发 — AI主动看全池)
+        candidates = list(self._symbols)
 
         bench = {}
         for b in BENCHMARK_SYMBOLS:
@@ -584,16 +581,26 @@ class AutoTrader:
         symbols_to_scan = []
         if candidates:
             candidates = [s for s in candidates if s not in ETF_BLACKLIST]
-            # 扫描优先级: 白名单热门股优先(最多5个) + 热度股补充
+            # 全池轮换扫描: 白名单热门股优先(最多5) + 热度股轮换补齐
+            # 轮换指针: 保证所有品种在 MAX_SCAN_ROUNDS 轮内都被 AI 看过
             hot_cands = [s for s in candidates if s in HOT_SYMBOLS][:5]
             rest = [s for s in candidates if s not in HOT_SYMBOLS]
             rest_ranked = self._rank_symbols(rest, rich_quotes)
-            symbols_to_scan = (hot_cands + rest_ranked)[:10]
-            logger.info("AI 原生扫描 %d 品种 | 大盘: %s",
-                       len(symbols_to_scan),
+            # 轮换: 从指针处取, 覆盖所有 rest 品种
+            n_rest_slots = max(10 - len(hot_cands), 3)
+            if len(rest_ranked) > n_rest_slots:
+                start = (self._scan_rotate % len(rest_ranked))
+                rotated = rest_ranked[start:] + rest_ranked[:start]
+                rest_slice = rotated[:n_rest_slots]
+            else:
+                rest_slice = rest_ranked
+            self._scan_rotate = (self._scan_rotate + n_rest_slots) % max(len(rest_ranked), 1)
+            symbols_to_scan = (hot_cands + rest_slice)
+            logger.info("AI 原生扫描 %d 品种 (全池轮换, 指针%d) | 大盘: %s",
+                       len(symbols_to_scan), self._scan_rotate,
                        " ".join(f"{k}{v:+.1f}%" for k,v in bench.items()))
         else:
-            logger.info("无价格变动候选, 本轮仅管仓")
+            logger.info("本轮仅管仓")
 
         seen = set(p.symbol for p in positions)
         for symbol in symbols_to_scan:
