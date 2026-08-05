@@ -206,6 +206,7 @@ FULL_SCAN_INTERVAL = 600
 QUOTE_INTERVAL = 30        # 行情轮询
 SCAN_INTERVAL = 300        # 管仓/开仓扫描: 5分钟 (日内止盈止损需要更频繁捕捉)
 SYMBOL_REFRESH_INTERVAL = 900  # 品种池刷新: 15分钟 (激进, 快速捕捉题材轮动)
+MIN_TURNOVER_24H = 1_000_000  # 品种池流动性下限: 24h成交额 ≥ $1M (拒绝交易量差的股票)
 LOSS_COOLDOWN_HOURS = 2          # 亏损平仓后冷却: 2小时不进入品种池
 TOP_N_SYMBOLS = 25
 BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]
@@ -849,7 +850,8 @@ class AutoTrader:
                     continue  # 拒绝 ETF 产品
                 try:
                     q = await self._market.get_quote(c.symbol)
-                    if q and q.mark_price > 0 and (q.volume_24h or 0) > 0:
+                    if q and q.mark_price > 0 and (q.volume_24h or 0) > 0 \
+                            and (q.turnover_24h or 0) >= MIN_TURNOVER_24H:
                         rich[c.symbol] = {
                             "volume_24h": q.volume_24h,
                             "change_pct": abs(q.change_pct),
@@ -863,7 +865,8 @@ class AutoTrader:
                     continue
                 try:
                     q = await self._market.get_quote(h)
-                    if q and q.mark_price > 0 and (q.volume_24h or 0) > 0:
+                    if q and q.mark_price > 0 and (q.volume_24h or 0) > 0 \
+                            and (q.turnover_24h or 0) >= MIN_TURNOVER_24H:
                         rich[h] = {
                             "volume_24h": q.volume_24h,
                             "change_pct": abs(q.change_pct),
