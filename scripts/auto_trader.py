@@ -353,8 +353,58 @@ class AutoTrader:
 
     # ═══ 主循环 ═══════════════════════════════════
 
+    async def _reconcile_open_decisions(self):
+        """启动对账: 内存中 outcome=None 的决策, 若交易所已无持仓 → 托管平仓丢失, 回填。
+
+        修复: 重启窗口期托管SL/TP平仓后, get_positions 的 stale 检测
+        (依赖进程内缓存) 无法发现 → 记忆永远挂着 outcome=None。
+        """
+        try:
+            decisions = self._memory.recent_decisions(200)
+            open_ones = [d for d in decisions
+                         if d.get("outcome") is None and d.get("entry")]
+            if not open_ones:
+                return
+            # 交易所当前持仓 symbol 集合
+            held = {p.symbol for p in (await self._executor.get_positions())}
+            for d in open_ones:
+                sym = d["symbol"]
+                if sym in held:
+                    continue  # 仍持仓, 正常
+                # 交易所已无此持仓 → 托管平仓 (重启窗口丢失的回填)
+                try:
+                    q = await self._market.get_quote(sym)
+                    cur = q.mark_price if q else d["entry"]
+                    entry = d["entry"]
+                    # 用涨跌幅估算: 空头 pnl = (entry-cur)*qty, 多头 = (cur-entry)*qty
+                    # qty 未知 → 用百分比: pnl% = (cur/entry-1) 或反
+                    if d["action"] in ("BUY", "STRONG_BUY"):
+                        pnl_pct = (cur / entry - 1) if entry else 0
+                    else:
+                        pnl_pct = (1 - cur / entry) if entry else 0
+                    # 估算绝对 PnL: 用该仓位名义 (约 equity/5 保证金 ×10x)
+                    pnl = pnl_pct * 1.0  # 名义 ~$10, 百分比即 ~$0.1/10%
+                    self._memory.close_decision(
+                        sym, cur, round(pnl, 2),
+                        close_reason="EXCHANGE_SLTP(重启对账)",
+                        holding_hours=0)
+                    logger.info("✅ 对账回填 %s: 交易所已平仓 → pnl≈$%.2f (估算)",
+                               sym, pnl)
+                    if pnl < 0:
+                        self._cooldown[sym] = time.time() + LOSS_COOLDOWN_HOURS * 3600
+                except Exception as e:
+                    logger.warning("对账 %s 失败: %s", sym, e)
+        except Exception as e:
+            logger.warning("启动对账失败: %s", e)
+
     async def run_once(self):
         logger.info("=== AutoTrader 单次扫描 ===")
+
+        # 启动对账: 找回重启窗口丢失的托管平仓 (每轮轻量, open_ones 为空时秒退)
+        try:
+            await self._reconcile_open_decisions()
+        except Exception:
+            pass
 
         # 每轮先刷新账户净值 (供仓位计算 + 账户状态注入, 防用过期值)
         try:
