@@ -241,7 +241,8 @@ class AutoTrader:
 
     def __init__(self):
         config = get_config()
-        self._symbols = [s for s in config.symbols if s not in ETF_BLACKLIST]  # 启动即排除ETF
+        # 固定行业池监控 (用户要求: 只监控AI/存储/加密热门行业)
+        self._symbols = [s for s in INDUSTRY_POOL if s not in ETF_BLACKLIST]
         self._market = BitgetMarketSource()
         self._symbol_source = BitgetSymbolSource()
 
