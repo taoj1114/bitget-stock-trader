@@ -292,6 +292,7 @@ class AutoTrader:
         self._last_full_scan = 0.0
         self._last_symbol_refresh = 0.0
         self._scan_rotate = 0  # 全池轮换扫描指针 (热度股轮换)
+        self._last_scan_start = 0.0  # 扫描节流: 上轮开始时间
         # 亏损冷却: symbol → 冷却截止时间戳 (重启后从 ai_memory 恢复)
         self._cooldown: dict[str, float] = self._load_cooldowns()
 
@@ -406,6 +407,12 @@ class AutoTrader:
             await self._reconcile_open_decisions()
         except Exception:
             pass
+
+        # 扫描节流: 上轮扫描若因API慢未在间隔内完成, 跳过本轮避免积压
+        if time.time() - self._last_scan_start < SCAN_INTERVAL * 0.9:
+            logger.warning("上轮扫描未完成(API慢), 本轮跳过避免积压")
+            return
+        self._last_scan_start = time.time()
 
         # 每轮先刷新账户净值 (供仓位计算 + 账户状态注入, 防用过期值)
         try:

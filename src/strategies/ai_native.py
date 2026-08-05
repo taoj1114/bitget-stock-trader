@@ -88,7 +88,7 @@ class AINativeDecisionMaker:
             logger.warning("API key 未配置")
             return ""
         if not self._client:
-            self._client = httpx.AsyncClient(timeout=60)
+            self._client = httpx.AsyncClient(timeout=30)  # 单次调用30s上限, 防全池扫描积压
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self._api_key}"}
         payload = {
             "model": model,
@@ -254,7 +254,7 @@ class AINativeDecisionMaker:
             system="你是美股日内交易分析师。决策前在内心完成推理, 只输出JSON结果。",
             prompt=prompt, model=self._model,
             temp=0.3, max_tokens=4000, json_mode=False,
-            retries=2,  # 开仓低频高价值, 空返回重试2次
+            retries=1,  # 开仓重试1次 (30s超时上限, 防全池扫描积压)
         )
         return self._parse_json(raw)
 
