@@ -170,6 +170,34 @@ def _reversal_kline(klines, lookback: int = 10) -> str:
         at_top = pos_pct > 85 or (win_hi - c) / win_hi * 100 < 3  # 贴近近10根高点
         at_bottom = pos_pct < 15 or (c - win_lo) / c * 100 < 3    # 贴近近10根低点
 
+        # ── 顶部/底部破位结构检测 (多根K线反转: 暴涨→出货→大阴线破位) ──
+        window12 = ks[-12:]
+        hi12 = max(float(x.high) for x in window12)
+        lo12 = min(float(x.low) for x in window12)
+        hi_idx = max(range(len(window12)), key=lambda i: float(window12[i].high))
+        lo_idx = min(range(len(window12)), key=lambda i: float(window12[i].low))
+        # 从最高点回落幅度 (破位下跌)
+        pullback = (hi12 - c) / hi12 * 100
+        # 高位放量滞涨/出货检测: 最高点K线后出现放量(量>2x)但涨幅<2%的K线
+        after_hi = window12[hi_idx + 1:] if hi_idx + 1 < len(window12) else []
+        vol_after_hi = [float(x.volume or 0) for x in after_hi]
+        hi_vol = float(window12[hi_idx].volume or 1)
+        distr_vol = max(vol_after_hi) if vol_after_hi else 0
+        distribution = distr_vol > hi_vol * 1.5 and len(after_hi) >= 1
+        # 破位后放量阴线: 最近一根是阴线且放量
+        last_is_down = c < o
+        last_vol_high = vol_ratio > 1.2 and last_is_down
+        # 顶部破位: 高位结构 + 回落>4% + (出货 或 放量阴线) → 做空信号
+        if pullback > 4 and hi_idx <= len(window12) - 2 and (distribution or (last_vol_high and pullback > 5)):
+            return (f"⚠️4H顶部破位(做空信号!): 暴涨后从高点${hi12:.2f}回落{pullback:.1f}%"
+                    f"+放量出货(量{distr_vol:.0f}x高价K线) → 反转成立, 禁做多!\n")
+        # 底部破位: 从最低点反弹 + 放量阳线 → 做多信号
+        rebound = (c - lo12) / c * 100
+        last_is_up = c > o
+        if rebound > 4 and lo_idx <= 6 and last_is_up and vol_ratio > 1.2:
+            return (f"⚠️4H底部反转(做多信号!): 暴跌后从低点${lo12:.2f}反弹{rebound:.1f}%"
+                    f"+放量阳线 → 反转成立, 顺反转开多\n")
+
         is_small_body = body_ratio < 0.35  # 开收接近
         is_long_shadow = (upper > 0.45 or lower > 0.45 or upper + lower > 0.6)
 
