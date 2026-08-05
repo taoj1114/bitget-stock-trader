@@ -206,7 +206,9 @@ FULL_SCAN_INTERVAL = 600
 QUOTE_INTERVAL = 30        # 行情轮询
 SCAN_INTERVAL = 300        # 管仓/开仓扫描: 5分钟 (日内止盈止损需要更频繁捕捉)
 SYMBOL_REFRESH_INTERVAL = 900  # 品种池刷新: 15分钟 (激进, 快速捕捉题材轮动)
-MIN_TURNOVER_24H = 1_000_000  # 品种池流动性下限: 24h成交额 ≥ $1M (拒绝交易量差的股票)
+MIN_TURNOVER_24H = 5_000_000  # 品种池流动性下限: 24h成交额 ≥ $5M
+# (Bitget美股合约市场总量有限: $1亿只剩SNDK/MU 2只, $5M=20只+白名单9只最均衡;
+#  排除VRT$5万/NOKSTOCK$54万等垃圾流动性, 保证买得进卖得出止损准确)
 LOSS_COOLDOWN_HOURS = 2          # 亏损平仓后冷却: 2小时不进入品种池
 TOP_N_SYMBOLS = 25
 BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]
