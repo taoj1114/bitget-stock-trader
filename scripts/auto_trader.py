@@ -212,9 +212,20 @@ MIN_TURNOVER_24H = 5_000_000  # 品种池流动性下限: 24h成交额 ≥ $5M
 LOSS_COOLDOWN_HOURS = 2          # 亏损平仓后冷却: 2小时不进入品种池
 TOP_N_SYMBOLS = 25
 BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]
-# 热门股白名单: 强制保留在品种池 (不受热度排名影响)
-HOT_SYMBOLS = ["NVDA", "TSLA", "META", "AMZN", "MSFT", "AAPL", "GOOGL",
-               "PLTR", "AMD", "COIN", "MSTR", "SMCI", "AVGO", "NFLX", "ARM"]
+# ── 固定监控池: 三大热门行业 (AI / 存储 / 加密货币) ──
+# 用户要求: 只监控热门行业品种, 不动态全市场选股
+INDUSTRY_POOL = [
+    # AI 算力/云/应用
+    "NVDA", "AMD", "AVGO", "ARM", "SMCI", "MRVL", "PLTR",
+    "MSFT", "GOOGL", "AMZN", "META", "TSLA", "ORCL", "NBIS",
+    "CRCL", "LITE", "COHR", "DELL", "AAPL", "INTC",
+    # 存储/半导体
+    "SNDK", "MU", "SKHYNIX", "SKHY", "SAMSUNG", "KIOXIA", "WDC",
+    "TSM", "ASML", "AXTI", "AAOI",
+    # 加密货币
+    "COIN", "MSTR", "HOOD", "IREN",
+]
+HOT_SYMBOLS = INDUSTRY_POOL  # 池内全部视为热门 (扫描切片时按热度排名轮换)
 
 # ETF 黑名单: 品种池拒绝 ETF 产品 (yfinance quoteType==ETF 识别, 50个)
 ETF_BLACKLIST = {
@@ -703,22 +714,17 @@ class AutoTrader:
         symbols_to_scan = []
         if candidates:
             candidates = [s for s in candidates if s not in ETF_BLACKLIST]
-            # 全池轮换扫描: 白名单热门股优先(最多5) + 热度股轮换补齐
-            # 轮换指针: 保证所有品种在 MAX_SCAN_ROUNDS 轮内都被 AI 看过
-            hot_cands = [s for s in candidates if s in HOT_SYMBOLS][:5]
-            rest = [s for s in candidates if s not in HOT_SYMBOLS]
-            rest_ranked = self._rank_symbols(rest, rich_quotes)
-            # 轮换: 从指针处取, 覆盖所有 rest 品种
-            n_rest_slots = max(10 - len(hot_cands), 3)
-            if len(rest_ranked) > n_rest_slots:
-                start = (self._scan_rotate % len(rest_ranked))
-                rotated = rest_ranked[start:] + rest_ranked[:start]
-                rest_slice = rotated[:n_rest_slots]
+            # 固定行业池轮换扫描: 按热度排名 + 指针轮换, 保证全池都被 AI 看过
+            ranked = self._rank_symbols(candidates, rich_quotes)
+            n_slots = 10
+            if len(ranked) > n_slots:
+                start = (self._scan_rotate % len(ranked))
+                rotated = ranked[start:] + ranked[:start]
+                symbols_to_scan = rotated[:n_slots]
             else:
-                rest_slice = rest_ranked
-            self._scan_rotate = (self._scan_rotate + n_rest_slots) % max(len(rest_ranked), 1)
-            symbols_to_scan = (hot_cands + rest_slice)
-            logger.info("AI 原生扫描 %d 品种 (全池轮换, 指针%d) | 大盘: %s",
+                symbols_to_scan = ranked
+            self._scan_rotate = (self._scan_rotate + n_slots) % max(len(ranked), 1)
+            logger.info("AI 原生扫描 %d 品种 (固定池轮换, 指针%d) | 大盘: %s",
                        len(symbols_to_scan), self._scan_rotate,
                        " ".join(f"{k}{v:+.1f}%" for k,v in bench.items()))
         else:
@@ -838,32 +844,13 @@ class AutoTrader:
         return sorted(symbols, key=lambda s: scores.get(s, 0), reverse=True)
 
     async def _refresh_symbols(self):
-        """从全市场美股合约动态刷新品种池（按热度取前25）。"""
+        """固定行业池刷新: 只对 INDUSTRY_POOL 做流动性/冷却过滤, 不从全市场选股。"""
         try:
-            contracts = await self._symbol_source.get_stock_symbols()
-            if len(contracts) < 10:
-                logger.warning("全市场合约不足 (%d)，保持原池", len(contracts))
-                return
-
-            # 批量拉行情，按成交量+涨跌排序 (排除ETF黑名单)
+            now = time.time()
+            # 池内品种行情 (流动性过滤: 成交额 ≥ MIN_TURNOVER_24H)
             rich = {}
-            for c in contracts[:80]:  # 全市场美股合约
-                if c.symbol in ETF_BLACKLIST:
-                    continue  # 拒绝 ETF 产品
-                try:
-                    q = await self._market.get_quote(c.symbol)
-                    if q and q.mark_price > 0 and (q.volume_24h or 0) > 0 \
-                            and (q.turnover_24h or 0) >= MIN_TURNOVER_24H:
-                        rich[c.symbol] = {
-                            "volume_24h": q.volume_24h,
-                            "change_pct": abs(q.change_pct),
-                            "turnover_24h": q.turnover_24h,
-                        }
-                except Exception: pass
-
-            # 白名单热门股: 即使不在前80也单独拉行情 (保证强制进池)
-            for h in HOT_SYMBOLS:
-                if h in rich or h in ETF_BLACKLIST:
+            for h in INDUSTRY_POOL:
+                if h in ETF_BLACKLIST:
                     continue
                 try:
                     q = await self._market.get_quote(h)
@@ -874,35 +861,30 @@ class AutoTrader:
                             "change_pct": abs(q.change_pct),
                             "turnover_24h": q.turnover_24h,
                         }
-                except Exception: pass
+                except Exception:
+                    pass
 
-            if len(rich) >= 15:
-                ranked = self._rank_symbols(list(rich.keys()), rich)
-                # 过滤亏损冷却中的品种 (24h内亏损平仓)
-                now = time.time()
-                active = [s for s in ranked if self._cooldown.get(s, 0) <= now]
-                if len(active) < TOP_N_SYMBOLS // 2 and self._cooldown:
-                    logger.info("冷却品种过多(%d), 放宽过滤", len([s for s in ranked if self._cooldown.get(s, 0) > now]))
-                    active = ranked
-                # 池子 = 热度 top20 + 热门股白名单 (选项B)
-                new_pool = active[:TOP_N_SYMBOLS - len(HOT_SYMBOLS)]
-                for h in HOT_SYMBOLS:
-                    if h in rich and h not in new_pool and self._cooldown.get(h, 0) <= now:
-                        new_pool.append(h)
-                # 保留现有持仓品种（避免池子刷新把持仓踢掉）
-                positions = await self._executor.get_positions()
-                held = {p.symbol for p in positions}
-                for h in held:
-                    if h not in new_pool:
-                        new_pool.append(h)
-                self._symbols = new_pool
-                hot_in = [h for h in HOT_SYMBOLS if h in new_pool]
-                if hot_in:
-                    logger.info("品种池含白名单热门股: %s", hot_in)
-                cooling_now = [s for s in self._cooldown if self._cooldown[s] > now and s not in held]
-                if cooling_now:
-                    logger.info("品种池刷新 | 冷却中跳过: %s", cooling_now[:8])
-                logger.info("品种池动态刷新: %d 个 (来自全市场 %d)", len(new_pool), len(rich))
+            # 保留现有持仓品种 (不管流动性/冷却)
+            positions = await self._executor.get_positions()
+            held = {p.symbol for p in positions}
+
+            # 过滤亏损冷却中的品种
+            active = [s for s in rich if self._cooldown.get(s, 0) <= now or s in held]
+            new_pool = list(active)
+            for h in held:
+                if h not in new_pool:
+                    new_pool.append(h)
+            # 保证池非空 (极端情况: 全部冷却/流动性不足 → 保留原池)
+            if len(new_pool) < 5 and self._symbols:
+                logger.warning("固定池过滤后过少(%d), 保留原池", len(new_pool))
+                return
+
+            self._symbols = new_pool
+            cooling_now = [s for s in self._cooldown if self._cooldown[s] > now and s not in held]
+            if cooling_now:
+                logger.info("品种池刷新 | 冷却中跳过: %s", cooling_now[:8])
+            logger.info("品种池刷新: %d 个 (固定行业池 %d, 流动性≥$%.0fM)",
+                       len(new_pool), len(INDUSTRY_POOL), MIN_TURNOVER_24H / 1e6)
         except Exception as e:
             logger.error("刷新品种池失败: %s", e)
 
