@@ -209,7 +209,7 @@ SYMBOL_REFRESH_INTERVAL = 900  # 品种池刷新: 15分钟 (激进, 快速捕捉
 MIN_TURNOVER_24H = 5_000_000  # 品种池流动性下限: 24h成交额 ≥ $5M
 # (Bitget美股合约市场总量有限: $1亿只剩SNDK/MU 2只, $5M=20只+白名单9只最均衡;
 #  排除VRT$5万/NOKSTOCK$54万等垃圾流动性, 保证买得进卖得出止损准确)
-LOSS_COOLDOWN_HOURS = 2          # 亏损平仓后冷却: 2小时不进入品种池
+LOSS_COOLDOWN_HOURS = 0          # 亏损冷却已禁用 (用户要求: 亏损后立即重新扫描, 不设冷却)
 TOP_N_SYMBOLS = 25
 BENCHMARK_SYMBOLS = ["SPY", "QQQ", "SOXX"]
 # ── 固定监控池: 三大热门行业 (AI / 存储 / 加密货币) ──
@@ -319,11 +319,7 @@ class AutoTrader:
         """交易所托管 SL/TP 触发平仓 → 回填 ai_memory。"""
         try:
             self._memory.close_decision(symbol, close_price, pnl, close_reason=reason)
-            if pnl < 0:
-                self._cooldown[symbol] = time.time() + LOSS_COOLDOWN_HOURS * 3600
-                logger.info("%s 托管止损 $%.2f → 冷却 %dh", symbol, pnl, LOSS_COOLDOWN_HOURS)
-            else:
-                logger.info("%s 托管止盈 $%.2f", symbol, pnl)
+            logger.info("%s 托管平仓 $%.2f (%s)", symbol, pnl, reason)
         except Exception as e:
             logger.warning("托管平仓记忆回填失败 %s: %s", symbol, e)
 
@@ -344,29 +340,8 @@ class AutoTrader:
             return ""
 
     def _load_cooldowns(self) -> dict[str, float]:
-        """从 ai_memory 恢复亏损冷却 (最近2h内亏损平仓的品种)。"""
-        import datetime as _dt
-        cooldown = {}
-        try:
-            decisions = self._memory.recent_decisions(500)
-            now_ts = time.time()
-            for d in decisions:
-                if d.get("outcome") == "loss" and d.get("close_pnl", 0) < 0:
-                    try:
-                        t = _dt.datetime.strptime(d["time"], "%Y-%m-%d %H:%M:%S")
-                        t = t.replace(tzinfo=_dt.timezone.utc)
-                        close_ts = t.timestamp()
-                    except Exception:
-                        continue
-                    expiry = close_ts + LOSS_COOLDOWN_HOURS * 3600
-                    sym = d["symbol"]
-                    if expiry > now_ts and expiry > cooldown.get(sym, 0):
-                        cooldown[sym] = expiry
-            if cooldown:
-                logger.info("恢复亏损冷却: %s", {k: _dt.datetime.fromtimestamp(v, _dt.timezone.utc).strftime("%m-%d %H:%M") for k, v in cooldown.items()})
-        except Exception as e:
-            logger.warning("恢复冷却失败: %s", e)
-        return cooldown
+        """亏损冷却已禁用 — 恒返回空 (保留方法兼容, 不加载任何冷却)。"""
+        return {}
 
     # ═══ 主循环 ═══════════════════════════════════
 
@@ -407,8 +382,6 @@ class AutoTrader:
                         holding_hours=0)
                     logger.info("✅ 对账回填 %s: 交易所已平仓 → pnl≈$%.2f (估算)",
                                sym, pnl)
-                    if pnl < 0:
-                        self._cooldown[sym] = time.time() + LOSS_COOLDOWN_HOURS * 3600
                 except Exception as e:
                     logger.warning("对账 %s 失败: %s", sym, e)
         except Exception as e:
@@ -634,10 +607,7 @@ class AutoTrader:
                         if close_result.status != "CLOSED":
                             logger.warning("%s 平仓失败: %s", pos.symbol, close_result.reason)
                             continue  # 平仓未成交, 不回填决策
-                        # 亏损平仓 → 冷却2h, 不进品种池
-                        if close_pnl < 0:
-                            self._cooldown[pos.symbol] = time.time() + LOSS_COOLDOWN_HOURS * 3600
-                            logger.info("%s 亏损平仓 $%.2f → 冷却 %dh", pos.symbol, close_pnl, LOSS_COOLDOWN_HOURS)
+                        # 亏损平仓不设冷却 (用户要求: 立即重新扫描)
                         try:
                             self._memory.close_decision(
                                 pos.symbol, q.mark_price, close_pnl,
@@ -869,21 +839,18 @@ class AutoTrader:
             positions = await self._executor.get_positions()
             held = {p.symbol for p in positions}
 
-            # 过滤亏损冷却中的品种
-            active = [s for s in rich if self._cooldown.get(s, 0) <= now or s in held]
+            # 过滤亏损冷却中的品种 (冷却已禁用, 全部保留)
+            active = [s for s in rich]
             new_pool = list(active)
             for h in held:
                 if h not in new_pool:
                     new_pool.append(h)
-            # 保证池非空 (极端情况: 全部冷却/流动性不足 → 保留原池)
+            # 保证池非空 (极端情况: 全部流动性不足 → 保留原池)
             if len(new_pool) < 5 and self._symbols:
                 logger.warning("固定池过滤后过少(%d), 保留原池", len(new_pool))
                 return
 
             self._symbols = new_pool
-            cooling_now = [s for s in self._cooldown if self._cooldown[s] > now and s not in held]
-            if cooling_now:
-                logger.info("品种池刷新 | 冷却中跳过: %s", cooling_now[:8])
             logger.info("品种池刷新: %d 个 (固定行业池 %d, 流动性≥$%.0fM)",
                        len(new_pool), len(INDUSTRY_POOL), MIN_TURNOVER_24H / 1e6)
         except Exception as e:
