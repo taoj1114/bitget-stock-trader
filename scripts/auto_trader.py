@@ -118,6 +118,64 @@ def _holding_hours(pos) -> float:
         return 0.0
 
 
+def _reversal_kline(klines, lookback: int = 10) -> str:
+    """4H反转K线识别 (用户定义形态, 信号极强)。
+
+    顶部反转 (→做空):
+      - 前段明显上涨 (最近5根涨>1.5%)
+      - 实体小 (|开-收|/振幅 < 35%: 开收接近)
+      - 长上影或上下影都长 (最高/最低波动大)
+      - 量价背离: 缩量滞涨(量<0.7x) 或 放量长上影(量>1.5x = 抛压)
+    底部反转 (→做多):
+      - 前段明显下跌 (最近5根跌>1.5%)
+      - 实体小 (开收接近)
+      - 长下影 (最低/最高波动大)
+      - 放量 (量>1.3x = 承接; 跌后放量长下影 = 止跌)
+    持仓逻辑: 反转K线方向入场后持有, 直到出现下一个反向反转K线离场。
+    """
+    try:
+        if not klines or len(klines) < 6:
+            return ""
+        ks = list(klines)
+        k = ks[-1]
+        o, c, h, l = float(k.open), float(k.close), float(k.high), float(k.low)
+        rng = h - l
+        if rng <= 0:
+            return ""
+        body_ratio = abs(c - o) / rng
+        upper = (h - max(o, c)) / rng
+        lower = (min(o, c) - l) / rng
+
+        prev = ks[-6:-1]
+        prev_chg = (float(prev[-1].close) / float(prev[0].close) - 1) * 100 if prev else 0
+        vols = [float(p.volume or 0) for p in prev]
+        avg_vol = sum(vols) / len(vols) if vols else 0
+        vol_ratio = (float(k.volume or 0) / avg_vol) if avg_vol > 0 else 1.0
+
+        is_small_body = body_ratio < 0.35  # 开收接近
+        is_long_shadow = (upper > 0.45 or lower > 0.45 or upper + lower > 0.6)
+
+        # 顶部反转 (上涨后小实体+长影+量价背离)
+        if prev_chg > 1.5 and is_small_body and is_long_shadow:
+            if upper > 0.5 and vol_ratio > 1.5:
+                return (f"⚠️4H顶部反转K线(做空信号!): 涨后小实体+放量长上影"
+                        f"(上影{upper:.0%}, 量{vol_ratio:.1f}x=抛压重) → 顺反转做空\n")
+            if vol_ratio < 0.7 and upper > 0.35:
+                return (f"⚠️4H顶部反转K线(做空信号!): 涨后小实体+缩量滞涨"
+                        f"(上影{upper:.0%}, 量{vol_ratio:.1f}x=买盘枯竭) → 顺反转做空\n")
+        # 底部反转 (下跌后小实体+长下影+放量)
+        if prev_chg < -1.5 and is_small_body and is_long_shadow:
+            if lower > 0.5 and vol_ratio > 1.3:
+                return (f"⚠️4H底部反转K线(做多信号!): 跌后小实体+放量长下影"
+                        f"(下影{lower:.0%}, 量{vol_ratio:.1f}x=承接强) → 顺反转做多\n")
+            if lower > 0.45:
+                return (f"⚠️4H底部反转K线(做多信号!): 跌后小实体+长下影"
+                        f"(下影{lower:.0%}) → 顺反转做多\n")
+        return ""
+    except Exception:
+        return ""
+
+
 def _trend_shape(klines, lookback: int = 24) -> str:
     """走势形状分析 — 把最近K线轨迹压缩成文字 (AI 能读懂动态走势)。
 
@@ -472,8 +530,12 @@ class AutoTrader:
                 ob_str = _pressure_str(book)
             except Exception:
                 pass
+            # 4H反转K线识别 (用户形态: 小实体+长影+量价背离 → 强反转信号)
+            reversal_4h = _reversal_kline(k_4h)
             # 走势形状分析 (5m K线轨迹)
             trend_str = _trend_shape(k_5m)
+            if reversal_4h:
+                trend_str = reversal_4h + trend_str
 
             ai_inp = AIInput(
                 symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
@@ -615,8 +677,12 @@ class AutoTrader:
                         book = await self._market.get_order_book(pos.symbol, limit=10)
                         ob_str = _pressure_str(book)
                     except Exception: pass
+                    # 4H反转K线识别 (持仓中: 反向反转K线=离场信号)
+                    reversal_4h = _reversal_kline(k_4h)
                     # 走势形状分析 (5m K线轨迹)
                     trend_str = _trend_shape(k_5m)
+                    if reversal_4h:
+                        trend_str = reversal_4h + trend_str
                     ai_inp = AIInput(
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                         klines_1h=k_1h, klines_4h=k_4h, klines_1d=[],
