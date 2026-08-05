@@ -216,9 +216,10 @@ class AINativeDecisionMaker:
             f"${inp.mark_price:.2f} ({inp.change_pct:+.1f}%)\n"
             + (f"5m RSI={inp.ind_5m.get('rsi',50):.0f} MA10={inp.ind_5m.get('ma10',0):.2f} MA30={inp.ind_5m.get('ma30',0):.2f} "
                f"ATR={inp.ind_5m.get('atr',0):.2f} "
+               f"MACD={inp.ind_5m.get('macd_cross','')} "
                f"VWAP={inp.ind_5m.get('vwap',0):.2f} 量比={inp.ind_5m.get('volume_ratio',1):.1f} BB={inp.ind_5m.get('bb_position',0.5):.2f} [日内]\n" if inp.ind_5m else "")
             + (inp.trend_shape or "")
-            + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')}\n"
+            + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')} MACD={inp.ind_1h.get('macd_cross','')}\n"
             + f"大盘 {bench_str}\n"
             f"OI={inp.open_interest:.0f} 费率={inp.funding_rate*100:.4f}%\n"
             f"新闻 {inp.news_summary or '无'}\n"
@@ -326,9 +327,10 @@ class AINativeDecisionMaker:
             f"持仓{ctx.get('hours',0):.0f}小时 浮盈=${ctx.get('pnl',0):.2f}\n"
             f"当前SL=${ctx.get('sl',0):.2f} 当前TP=${ctx.get('tp',0):.2f}\n\n"
             + (f"5m RSI={inp.ind_5m.get('rsi',50):.0f} MA10={inp.ind_5m.get('ma10',0):.2f} MA30={inp.ind_5m.get('ma30',0):.2f} "
-               f"VWAP={inp.ind_5m.get('vwap',0):.2f} 量比={inp.ind_5m.get('volume_ratio',1):.1f} BB={inp.ind_5m.get('bb_position',0.5):.2f} [日内]\n" if inp.ind_5m else "")
+               f"VWAP={inp.ind_5m.get('vwap',0):.2f} 量比={inp.ind_5m.get('volume_ratio',1):.1f} BB={inp.ind_5m.get('bb_position',0.5):.2f} "
+               f"MACD={inp.ind_5m.get('macd_cross','')} [日内]\n" if inp.ind_5m else "")
             + (inp.trend_shape or "")
-            + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')}\n"
+            + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')} MACD={inp.ind_1h.get('macd_cross','')}\n"
             + f"大盘 {bench_str}\n"
             + f"新闻 {inp.news_summary or '无'}\n"
             + (inp.orderbook or "")

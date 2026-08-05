@@ -21,6 +21,24 @@ from src.strategies.ai_native import AINativeDecisionMaker, AIInput, get_us_sess
 logger = logging.getLogger("autotrader")
 
 
+def _macd_cross(ind) -> str:
+    """MACD 交叉状态: 金叉/死叉/多头发散/空头发散 (供反转确认)。"""
+    try:
+        m = getattr(ind, "macd", 0) or 0
+        s = getattr(ind, "macd_signal", 0) or 0
+        h = getattr(ind, "macd_hist", None)
+        if h is None:
+            h = m - s
+        if abs(m - s) < 1e-9:
+            # 刚交叉 (hist≈0): 用 MACD 正负判断方向
+            return "金叉(多头)" if m >= 0 else "死叉(空头)"
+        if h >= 0:
+            return "多头发散"
+        return "空头发散"
+    except Exception:
+        return ""
+
+
 def _bb_pos(ind, price: float) -> float:
     """布林带位置 0-1: 0=下轨 0.5=中轨 1=上轨。"""
     try:
@@ -412,7 +430,9 @@ class AutoTrader:
                 i5 = self._tech.calculate(k_5m)
                 r5 = self._regime_detector.detect(k_5m)
                 ind_5m_raw = dict(rsi=i5.rsi14, ma10=i5.ma10, ma30=i5.ma30,
-                                  macd=i5.macd, atr=i5.atr14,
+                                  macd=i5.macd, macd_signal=i5.macd_signal,
+                                  macd_cross=_macd_cross(i5),
+                                  atr=i5.atr14,
                                   adx=r5.adx, regime=r5.regime,
                                   bb_position=_bb_pos(i5, q.mark_price),
                                   volume_ratio=i5.volume_ratio,
@@ -445,7 +465,8 @@ class AutoTrader:
                 symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                 klines_1h=k_1h, klines_4h=[], klines_1d=[],
                 ind_1h=dict(rsi=ind_1h.rsi14, ma10=ind_1h.ma10, ma30=ind_1h.ma30,
-                           macd=ind_1h.macd, atr=ind_1h.atr14,
+                           macd=ind_1h.macd, macd_cross=_macd_cross(ind_1h),
+                           atr=ind_1h.atr14,
                            adx=regime.adx, regime=regime.regime,
                            bb_position=_bb_pos(ind_1h, q.mark_price),
                            volume_ratio=ind_1h.volume_ratio,
@@ -545,7 +566,9 @@ class AutoTrader:
                         i5 = self._tech.calculate(k_5m)
                         r5 = self._regime_detector.detect(k_5m)
                         ind5 = dict(rsi=i5.rsi14, ma10=i5.ma10, ma30=i5.ma30,
-                                    macd=i5.macd, atr=i5.atr14,
+                                    macd=i5.macd, macd_signal=i5.macd_signal,
+                                    macd_cross=_macd_cross(i5),
+                                    atr=i5.atr14,
                                     adx=r5.adx, regime=r5.regime,
                                     bb_position=_bb_pos(i5, q.mark_price),
                                     volume_ratio=i5.volume_ratio,
@@ -570,7 +593,8 @@ class AutoTrader:
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                         klines_1h=k_1h, klines_4h=[], klines_1d=[],
                         ind_1h=dict(rsi=ind.rsi14, ma10=ind.ma10, ma30=ind.ma30,
-                                   macd=ind.macd, atr=ind.atr14, adx=reg.adx,
+                                   macd=ind.macd, macd_cross=_macd_cross(ind),
+                                   atr=ind.atr14, adx=reg.adx,
                                    regime=reg.regime,
                                    bb_position=_bb_pos(ind, q.mark_price),
                                    volume_ratio=ind.volume_ratio,
