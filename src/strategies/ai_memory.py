@@ -110,8 +110,14 @@ class AIMemory:
         self._save()
 
     def close_decision(self, symbol: str, close_price: float, pnl: float,
-                       close_reason: str = "", holding_hours: float = 0) -> None:
-        """平仓时回填最近一次未平仓决策的结果。"""
+                       close_reason: str = "", holding_hours: float = 0,
+                       max_pnl_pct: float = 0.0) -> None:
+        """平仓时回填最近一次未平仓决策的结果。
+
+        max_pnl_pct: 持仓期间最大浮盈% (T+N 评估: 判定方向是否正确 follow-through)
+          - direction_ok=True: 方向对但没吃到 (止损紧/离场早)
+          - direction_ok=False: 方向错 (failed breakout)
+        """
         for d in reversed(self._data["decisions"]):
             if d["symbol"] == symbol and d["close_pnl"] is None:
                 d["close_pnl"] = round(pnl, 2)
@@ -119,6 +125,9 @@ class AIMemory:
                 d["outcome"] = "win" if pnl > 0 else ("loss" if pnl < 0 else "flat")
                 d["close_reason"] = close_reason
                 d["holding_hours"] = round(holding_hours, 1)
+                # T+N 方向评估: 持仓期间最大浮盈≥0.5% = 方向曾正确
+                d["max_pnl_pct"] = round(max_pnl_pct, 2)
+                d["direction_ok"] = max_pnl_pct >= 0.5
                 break
         self._save()
 

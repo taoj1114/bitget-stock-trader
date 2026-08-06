@@ -15,6 +15,18 @@ from src.core.types import Signal
 logger = logging.getLogger(__name__)
 
 
+def _reversal_signal_text(inp) -> str:
+    """从 AIInput 的 trend_shape 提取反转K线/破位信号文本 (程序门控用)。"""
+    try:
+        ts = inp.trend_shape or ""
+        for line in ts.split("\n"):
+            if "反转K线" in line or "顶部破位" in line or "底部反转" in line:
+                return line.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def get_us_session(now=None) -> str:
     """判断当前美股交易时段（美东标准时间，自动处理夏令时）。
 
@@ -455,13 +467,21 @@ class AINativeDecisionMaker:
         # 只显示有结果的决策 (win/loss/flat), 排除纯 HOLD 噪音
         decided = [d for d in decisions if d.get("outcome") is not None]
         for d in (decided or decisions)[-15:]:
+            # T+N 方向评估: direction_ok=True = 方向对但没吃到 (止损紧/离场早)
+            d_ok = d.get("direction_ok")
+            d_tag = ""
+            if d_ok is True:
+                d_tag = " [方向对但止损紧/离场早!]"
+            elif d_ok is False and d.get("outcome") == "loss":
+                d_tag = " [方向错=failed breakout]"
             lines.append(
                 f"{d['time'][:16]} {d['symbol']} {d['action']} "
                 f"RSI={d['rsi_1h']} ADX={d['adx']} {d['regime']} "
                 f"[{d['session']}] → {d['outcome'] or 'open'} pnl={d['close_pnl']} "
                 f"SL%={d.get('sl_pct')} TP%={d.get('tp_pct')} "
-                f"平因={d.get('close_reason') or '-'} | {d['reason'][:50]}")
-
+                f"最大浮盈%={d.get('max_pnl_pct', 0)}{d_tag} "
+                f"平因={d.get('close_reason', '')[:25]} "
+                f"({d.get('holding_hours', 0):.1f}h) | {d['reason'][:50]}")
         # SL/TP 效果统计 (B: 止损距离 vs 胜率)
         sl_stats = ""
         sl_buckets = {}
@@ -565,6 +585,30 @@ class AINativeDecisionMaker:
                        inp.symbol, sl_dist, float(sl), fixed_sl)
             sl = fixed_sl
             sl_dist = abs(float(sl) - entry) / entry * 100
+
+        # ── 程序级方向门控 (AlphaSift L1 思路: 程序用4H硬数据复核AI方向, 防AAOI类错误) ──
+        ind4 = inp.ind_4h or {}
+        r4 = ind4.get('regime', '')
+        adx4 = ind4.get('adx', 0) or 0
+        # 门控1: 4H强趋势 vs 交易方向 (D4铁律 — 程序强制, 不靠LLM自觉)
+        if adx4 > 25 and r4 == "trend_up" and not is_buy:
+            logger.warning("门控拒绝 %s: 4H强趋势向上(ADX=%.0f)却要%s — 逆势! (D4铁律)",
+                          inp.symbol, adx4, action)
+            return None
+        if adx4 > 25 and r4 == "trend_down" and is_buy:
+            logger.warning("门控拒绝 %s: 4H强趋势向下(ADX=%.0f)却要BUY — 逆势! (D4铁律)",
+                          inp.symbol, adx4)
+            return None
+        # 门控2: 4H顶部破位/反转信号 (⚠️) — 程序检测到顶部反转却做多 → 拦
+        rev_sig = _reversal_signal_text(inp)
+        if is_buy and rev_sig and ("顶部" in rev_sig or "破位" in rev_sig):
+            logger.warning("门控拒绝 %s: 检测到%s却要BUY — 顺反转应做空/观望!",
+                          inp.symbol, rev_sig[:40])
+            return None
+        if not is_buy and rev_sig and ("底部" in rev_sig):
+            logger.warning("门控拒绝 %s: 检测到%s却要SELL — 顺反转应做多/观望!",
+                          inp.symbol, rev_sig[:40])
+            return None
 
         return Signal(
             strategy_id="ai_native", symbol=inp.symbol,

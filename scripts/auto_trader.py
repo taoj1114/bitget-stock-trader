@@ -430,6 +430,7 @@ class AutoTrader:
         self._last_symbol_refresh = 0.0
         self._scan_rotate = 0  # 全池轮换扫描指针 (热度股轮换)
         self._last_scan_start = 0.0  # 扫描节流: 上轮开始时间
+        self._max_pnl: dict[str, float] = {}  # T+N: symbol → 持仓期间最大浮盈%
         # 亏损冷却: symbol → 冷却截止时间戳 (重启后从 ai_memory 恢复)
         self._cooldown: dict[str, float] = self._load_cooldowns()
 
@@ -440,7 +441,9 @@ class AutoTrader:
     def _on_exchange_close(self, symbol: str, pnl: float, reason: str, close_price: float = 0):
         """交易所托管 SL/TP 触发平仓 → 回填 ai_memory。"""
         try:
-            self._memory.close_decision(symbol, close_price, pnl, close_reason=reason)
+            self._memory.close_decision(
+                symbol, close_price, pnl, close_reason=reason,
+                max_pnl_pct=self._max_pnl.pop(symbol, 0.0))
             logger.info("%s 托管平仓 $%.2f (%s)", symbol, pnl, reason)
         except Exception as e:
             logger.warning("托管平仓记忆回填失败 %s: %s", symbol, e)
@@ -671,6 +674,16 @@ class AutoTrader:
         if positions:
             for pos in positions:
                 try:
+                    # T+N 跟踪: 持仓期间最大浮盈% (平仓时评估方向是否正确)
+                    try:
+                        ep = pos.entry_price or 0
+                        up = getattr(pos, 'unrealized_pnl', 0) or 0
+                        if ep > 0:
+                            cur_pnl_pct = up / ep * 100
+                            self._max_pnl[pos.symbol] = max(
+                                self._max_pnl.get(pos.symbol, 0.0), cur_pnl_pct)
+                    except Exception:
+                        pass
                     k_1h = await self._market.get_klines(pos.symbol, "1H", 500)
                     k_5m = await self._market.get_klines(pos.symbol, "5m", 500)
                     k_4h = await self._market.get_klines(pos.symbol, "4H", 200)  # 4H: 定中期方向
@@ -776,7 +789,8 @@ class AutoTrader:
                             self._memory.close_decision(
                                 pos.symbol, q.mark_price, close_pnl,
                                 close_reason=close_reason,
-                                holding_hours=_holding_hours(pos))
+                                holding_hours=_holding_hours(pos),
+                                max_pnl_pct=self._max_pnl.pop(pos.symbol, 0.0))
                         except Exception: pass
                         continue
 
