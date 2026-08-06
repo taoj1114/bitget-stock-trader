@@ -81,6 +81,29 @@ class TechnicalAnalyzer:
             if vol_sum > 0:
                 ind.vwap = round(pv_sum / vol_sum, 4)
 
+        # ── 乖离率 (BIAS, 借鉴 daily_stock_analysis: 回踩MA=买点, 乖离过大=追高) ──
+        last_close = closes[-1] if closes else 0
+        if last_close > 0:
+            ind.bias_ma5 = round((last_close / ind.ma5 - 1) * 100, 2) if ind.ma5 > 0 else 0.0
+            ind.bias_ma10 = round((last_close / ind.ma10 - 1) * 100, 2) if ind.ma10 > 0 else 0.0
+            ind.bias_ma20 = round((last_close / ind.ma20 - 1) * 100, 2) if ind.ma20 > 0 else 0.0
+            ind.bias_ma30 = round((last_close / ind.ma30 - 1) * 100, 2) if ind.ma30 > 0 else 0.0
+
+        # ── 量价状态 (借鉴: 缩量回调=洗盘最佳, 放量下跌=最差) ──
+        if len(klines) >= 3:
+            chg = (closes[-1] / closes[-2] - 1) * 100 if closes[-2] else 0
+            vr = ind.volume_ratio or 1.0
+            if chg < 0 and vr < 0.8:
+                ind.volume_status = "缩量回调(洗盘,最佳)"
+            elif chg < 0 and vr > 1.5:
+                ind.volume_status = "放量下跌(风险!)"
+            elif chg > 0 and vr > 1.5:
+                ind.volume_status = "放量上涨(强势)"
+            elif chg > 0 and vr < 0.8:
+                ind.volume_status = "缩量上涨(乏力)"
+            else:
+                ind.volume_status = "量价平稳"
+
         # ── 其他 ─────────────────────────────
         if n >= 2:
             ind.change_pct = round((closes[-1] / closes[-2] - 1) * 100, 2)

@@ -229,7 +229,8 @@ class AINativeDecisionMaker:
             + (f"5m RSI={inp.ind_5m.get('rsi',50):.0f} MA10={inp.ind_5m.get('ma10',0):.2f} MA30={inp.ind_5m.get('ma30',0):.2f} "
                f"ATR={inp.ind_5m.get('atr',0):.2f} "
                f"MACD={inp.ind_5m.get('macd_cross','')} "
-               f"VWAP={inp.ind_5m.get('vwap',0):.2f} 量比={inp.ind_5m.get('volume_ratio',1):.1f} BB={inp.ind_5m.get('bb_position',0.5):.2f} [日内]\n" if inp.ind_5m else "")
+               f"VWAP={inp.ind_5m.get('vwap',0):.2f} 量比={inp.ind_5m.get('volume_ratio',1):.1f} BB={inp.ind_5m.get('bb_position',0.5):.2f} "
+               f"乖离MA5={inp.ind_5m.get('bias_ma5',0):+.1f}% {inp.ind_5m.get('volume_status','')} [日内]\n" if inp.ind_5m else "")
             + (inp.trend_shape or "")
             + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')} MACD={inp.ind_1h.get('macd_cross','')}\n"
             + (f"4H(定方向!): RSI={inp.ind_4h.get('rsi',50):.0f} ADX={inp.ind_4h.get('adx',0):.0f} {inp.ind_4h.get('regime','')} "
@@ -278,6 +279,16 @@ class AINativeDecisionMaker:
             "  做空反抽: 4H down + 1H反抽到MA10/MA30附近 + 5m受阻(长上影/缩量)+1H MACD未金叉 → 卖\n"
             "  止损: 回调低点/反抽高点外侧+0.5×ATR (距入场1.5-3%, 4H级别止损)\n"
             "  止盈: 2%-5% (4H级别空间, 让利润跑; 移动止损保护)\n"
+            "乖离率买点 (BIAS, 借鉴成熟评分系统 — 入场位置的核心指标):\n"
+            "  最佳买点: 价格回踩到MA5/MA10附近 (乖离MA5在-3%~0%), 缩量回调(量比<0.8=洗盘)\n"
+            "  允许介入: 乖离MA5在0~+3% (贴近均线, 顺势启动)\n"
+            "  严禁追高: 乖离MA5>+5% (价格远离均线=透支, 追高必被回踩扫)\n"
+            "  乖离<-5%: 破位风险, 等企稳再考虑 (乖离过大可能继续跌)\n"
+            "量价状态 (判断洗盘 vs 出货):\n"
+            "  缩量回调(量比<0.8)=洗盘 → 最佳买入时机 (主力没走)\n"
+            "  放量下跌(量比>1.5)=风险 → 不接飞刀 (主力在出)\n"
+            "  放量上涨(量比>1.5)=强势 → 顺势可追\n"
+            "  缩量上涨(量比<0.8)=乏力 → 谨慎 (买盘不足)\n"
             "衰竭反转入场 (D3, 次级):\n"
             "  做多见底: 4H衰竭 + RSI<30 + 放量长下影 + 5m放量突破MA10 → 买\n"
             "  做空见顶: 4H衰竭 + RSI>70 + 放量长上影 + 5m放量跌破MA10 → 卖\n"
@@ -360,7 +371,7 @@ class AINativeDecisionMaker:
             f"当前SL=${ctx.get('sl',0):.2f} 当前TP=${ctx.get('tp',0):.2f}\n\n"
             + (f"5m RSI={inp.ind_5m.get('rsi',50):.0f} MA10={inp.ind_5m.get('ma10',0):.2f} MA30={inp.ind_5m.get('ma30',0):.2f} "
                f"VWAP={inp.ind_5m.get('vwap',0):.2f} 量比={inp.ind_5m.get('volume_ratio',1):.1f} BB={inp.ind_5m.get('bb_position',0.5):.2f} "
-               f"MACD={inp.ind_5m.get('macd_cross','')} [日内]\n" if inp.ind_5m else "")
+               f"MACD={inp.ind_5m.get('macd_cross','')} 乖离MA5={inp.ind_5m.get('bias_ma5',0):+.1f}% {inp.ind_5m.get('volume_status','')} [日内]\n" if inp.ind_5m else "")
             + (inp.trend_shape or "")
             + f"1H RSI={inp.ind_1h.get('rsi',50):.0f} ADX={inp.ind_1h.get('adx',0):.0f} {inp.ind_1h.get('regime','')} MACD={inp.ind_1h.get('macd_cross','')}\n"
             + (f"4H(持仓方向对照): RSI={inp.ind_4h.get('rsi',50):.0f} ADX={inp.ind_4h.get('adx',0):.0f} {inp.ind_4h.get('regime','')} "

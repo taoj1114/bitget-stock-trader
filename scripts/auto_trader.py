@@ -545,7 +545,9 @@ class AutoTrader:
                               adx=r4h.adx, regime=r4h.regime,
                               bb_position=_bb_pos(i4h, q.mark_price),
                               volume_ratio=i4h.volume_ratio,
-                              vwap=i4h.vwap)
+                              vwap=i4h.vwap,
+                              bias_ma5=i4h.bias_ma5, bias_ma10=i4h.bias_ma10,
+                              volume_status=i4h.volume_status)
             ind_5m_raw = None
             if len(k_5m) >= 30:
                 i5 = self._tech.calculate(k_5m)
@@ -557,7 +559,9 @@ class AutoTrader:
                                   adx=r5.adx, regime=r5.regime,
                                   bb_position=_bb_pos(i5, q.mark_price),
                                   volume_ratio=i5.volume_ratio,
-                                  vwap=i5.vwap)
+                                  vwap=i5.vwap,
+                                  bias_ma5=i5.bias_ma5, bias_ma10=i5.bias_ma10,
+                                  volume_status=i5.volume_status)
 
             # 新闻降级: 仅异常波动(±5%)时注入, 否则空 (避免噪声)
             news_items = []
@@ -595,7 +599,9 @@ class AutoTrader:
                            adx=regime.adx, regime=regime.regime,
                            bb_position=_bb_pos(ind_1h, q.mark_price),
                            volume_ratio=ind_1h.volume_ratio,
-                           vwap=ind_1h.vwap),
+                           vwap=ind_1h.vwap,
+                           bias_ma5=ind_1h.bias_ma5, bias_ma10=ind_1h.bias_ma10,
+                           volume_status=ind_1h.volume_status),
                 ind_4h=ind_4h, ind_1d=None,
                 ind_5m=ind_5m_raw,
                 orderbook=ob_str,
@@ -709,7 +715,9 @@ class AutoTrader:
                                       adx=r4h.adx, regime=r4h.regime,
                                       bb_position=_bb_pos(i4h, q.mark_price),
                                       volume_ratio=i4h.volume_ratio,
-                                      vwap=i4h.vwap)
+                                      vwap=i4h.vwap,
+                                      bias_ma5=i4h.bias_ma5, bias_ma10=i4h.bias_ma10,
+                                      volume_status=i4h.volume_status)
                     ind5 = None
                     if len(k_5m) >= 30:
                         i5 = self._tech.calculate(k_5m)
@@ -721,7 +729,9 @@ class AutoTrader:
                                     adx=r5.adx, regime=r5.regime,
                                     bb_position=_bb_pos(i5, q.mark_price),
                                     volume_ratio=i5.volume_ratio,
-                                    vwap=i5.vwap)
+                                    vwap=i5.vwap,
+                                    bias_ma5=i5.bias_ma5, bias_ma10=i5.bias_ma10,
+                                    volume_status=i5.volume_status)
                     # 管仓: 仅异常波动注入新闻
                     news_items = []
                     news_titles = []
@@ -751,7 +761,9 @@ class AutoTrader:
                                    regime=reg.regime,
                                    bb_position=_bb_pos(ind, q.mark_price),
                                    volume_ratio=ind.volume_ratio,
-                                   vwap=ind.vwap),
+                                   vwap=ind.vwap,
+                                   bias_ma5=ind.bias_ma5, bias_ma10=ind.bias_ma10,
+                                   volume_status=ind.volume_status),
                         ind_4h=ind_4h, ind_1d=None,
                         ind_5m=ind5,
                         orderbook=ob_str,

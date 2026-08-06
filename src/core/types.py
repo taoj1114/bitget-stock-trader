@@ -120,6 +120,15 @@ class TechnicalIndicators:
     ema12: float = 0.0
     ema26: float = 0.0
 
+    # 乖离率 (BIAS: 价格偏离均线%)
+    bias_ma5: float = 0.0
+    bias_ma10: float = 0.0
+    bias_ma20: float = 0.0
+    bias_ma30: float = 0.0
+
+    # 量价状态 (缩量回调/放量下跌/放量上涨/缩量上涨/量价平稳)
+    volume_status: str = ""
+
     # 均线前一周期 (用于金叉/死叉检测)
     ma10_prev: float = 0.0
     ma30_prev: float = 0.0
