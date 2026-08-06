@@ -191,3 +191,71 @@ class AIMemory:
                 bucket = stats[group][key]
                 bucket[0 if o == "win" else 1 if o == "loss" else 2] += 1
         return stats
+
+    # ═══ 研究委员会 (AlphaEvo 思路: 确定性分析师, 不依赖LLM) ═══
+
+    def committee_diagnosis(self) -> list[str]:
+        """确定性委员会诊断: 技术/风险/过拟合/方向正确率。
+
+        返回诊断结论列表 (供复盘 prompt 注入, 让 AI 基于事实改进而非猜测)。
+        """
+        decisions = [d for d in self._data["decisions"] if d["outcome"] is not None]
+        if len(decisions) < 3:
+            return []
+        findings = []
+
+        # 分析师1: 技术分析师 (胜率/盈亏比/样本量)
+        wins = [d for d in decisions if d["outcome"] == "win"]
+        losses = [d for d in decisions if d["outcome"] == "loss"]
+        wr = len(wins) / len(decisions) * 100 if decisions else 0
+        avg_win = sum(d.get("close_pnl", 0) for d in wins) / len(wins) if wins else 0
+        avg_loss = sum(d.get("close_pnl", 0) for d in losses) / len(losses) if losses else 0
+        payoff = abs(avg_win / avg_loss) if avg_loss else 0
+        if len(decisions) < 8:
+            findings.append(f"技术: 样本仅{len(decisions)}笔, 结论置信度低 (≥8笔才可靠)")
+        elif wr < 40 and payoff < 1.0:
+            findings.append(f"技术: 胜率{wr:.0f}%+盈亏比{payoff:.2f}双低 → 入场和离场都需改进")
+        elif wr < 40:
+            findings.append(f"技术: 胜率{wr:.0f}%偏低, 但盈亏比{payoff:.2f}可接受 → 侧重入场质量")
+        elif payoff < 1.0:
+            findings.append(f"技术: 盈亏比{payoff:.2f}<1 (赢{avg_win:+.2f} 亏{avg_loss:+.2f}) → 侧重止盈止损结构")
+        else:
+            findings.append(f"技术: 胜率{wr:.0f}%+盈亏比{payoff:.2f}健康, 保持当前结构")
+
+        # 分析师2: 风险分析师 (最大连亏/单笔最大亏)
+        max_streak = 0
+        cur = 0
+        for d in decisions:
+            if d["outcome"] == "loss":
+                cur += 1
+                max_streak = max(max_streak, cur)
+            else:
+                cur = 0
+        max_loss = min((d.get("close_pnl", 0) for d in decisions), default=0)
+        if max_streak >= 4:
+            findings.append(f"风险: 最大连亏{max_streak}笔 → 注意单日连续亏损时的仓位/暂停")
+        if max_loss < -0.1:
+            findings.append(f"风险: 单笔最大亏${max_loss:.2f} → 检查止损距离是否过大")
+
+        # 分析师3: 方向正确率 (T+N: direction_ok 判定)
+        d_ok = [d for d in decisions if d.get("direction_ok") is True]
+        d_bad = [d for d in decisions if d.get("direction_ok") is False]
+        if d_ok or d_bad:
+            ok_rate = len(d_ok) / (len(d_ok) + len(d_bad)) * 100
+            if ok_rate < 40 and len(d_ok) + len(d_bad) >= 5:
+                findings.append(f"方向: 方向正确率仅{ok_rate:.0f}% → 入场时机/方向判断是主问题")
+            elif ok_rate >= 60 and len(d_ok) + len(d_bad) >= 5:
+                findings.append(f"方向: 方向正确率{ok_rate:.0f}% 但亏损 → 止损距离/持仓管理是主问题")
+
+        # 分析师4: 过拟合检查 (规则/经验是否过度泛化)
+        if len(decisions) >= 5:
+            session_wins = {}
+            for d in decisions:
+                s = d.get("session", "?")
+                session_wins.setdefault(s, [0, 0])
+                session_wins[s][0] += 1
+                session_wins[s][1] += 1 if d["outcome"] == "win" else 0
+            for s, (n, w) in session_wins.items():
+                if n >= 3 and w / n < 0.2:
+                    findings.append(f"过拟合: 时段[{s}]胜率{w}/{n}极低 → 该时段应重点审查或禁开")
+        return findings

@@ -508,10 +508,16 @@ class AINativeDecisionMaker:
             f"按方向: {json.dumps(stats['by_action'], ensure_ascii=False)}"
             + sl_stats
         )
+        # 研究委员会诊断 (AlphaEvo 思路: 确定性分析师给出事实结论, AI据此改进)
+        committee = memory.committee_diagnosis()
+        committee_str = ("\n委员会诊断(事实结论, 你的经验必须与之吻合):\n"
+                         + "\n".join(f"  - {f}" for f in committee)
+                         if committee else "")
         prompt = (
             "你是交易系统复盘员。以下是最近交易决策与结果：\n\n"
             + "\n".join(lines) + "\n\n"
             + "统计:\n" + stats_str + "\n\n"
+            + committee_str + "\n\n"
             "输出JSON对象:\n"
             '{"lessons": ["经验1","经验2","经验3"]}\n'
             "lessons: 3-5条可操作经验, 每条≤60字中文\n"
@@ -519,6 +525,7 @@ class AINativeDecisionMaker:
             "      交易决策完全由主AI自由判断, 复盘经验只是提供视角参考。\n"
             "      经验要具体描述'什么情况下容易发生什么', 而非下禁令。\n"
             "      如'盘前流动性较差时追涨容易被扫' 而非 '盘前禁止开仓'。\n"
+            "      委员会诊断是硬事实, 经验必须围绕委员会发现的问题展开, 不要写委员会没提到的方向。\n"
         )
         raw = await self._call(
             system="你是交易复盘员，只输出JSON对象。",
