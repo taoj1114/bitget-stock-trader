@@ -193,6 +193,9 @@ class BitgetTrader:
         plan_type: str = "pos_loss",  # pos_loss / pos_profit
     ) -> dict:
         """下止盈止损单。"""
+        # 价格精度修复: AI计算可能产生浮点误差(450.5399999999999),
+        # Bitget checkScale=2 要求最多2位小数 → 必须round, 否则挂单400失败
+        trigger_price = round(float(trigger_price), 2)
         body = {
             "symbol": f"{symbol}USDT",
             "productType": "USDT-FUTURES",

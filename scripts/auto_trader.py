@@ -943,6 +943,15 @@ class AutoTrader:
             logger.info("🚫 开仓已停止 (OPEN_TRADING=0) — 仅管仓/平仓")
             return
 
+        # 满仓保护: 持仓≥5 或 可用保证金不足一仓 → 跳过开仓扫描 (省AI请求)
+        try:
+            n_pos = len(await self._executor.get_positions())
+            if n_pos >= 5:
+                logger.info("⏭️ 已满仓 (%d/5) — 跳过开仓扫描, 仅管仓", n_pos)
+                return
+        except Exception:
+            pass
+
         # ── AI 原生扫描开仓 (仅当有候选品种时, 排除ETF) ──
         symbols_to_scan = []
         if candidates:
