@@ -180,7 +180,7 @@ class RealExecutor:
             if not (sl_ok and tp_ok):
                 logger.error("  ❌ %s SL/TP补挂仍失败 → 立即平仓防裸奔", signal.symbol)
                 try:
-                    await self._trader.close_position(signal.symbol, hold_side)
+                    await self._trader.close_position(signal.symbol, hold_side, quantity)
                 except Exception as e:
                     logger.error("  紧急平仓失败 %s: %s", signal.symbol, e)
                 return OrderResult(status="REJECTED",

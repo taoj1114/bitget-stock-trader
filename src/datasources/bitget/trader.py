@@ -170,16 +170,25 @@ class BitgetTrader:
 
         return await self._request("POST", "/api/v2/mix/order/place-order", body)
 
-    async def close_position(self, symbol: str, side: str = "") -> dict:
-        """市价平仓。side 为空则平所有。"""
+    async def close_position(self, symbol: str, hold_side: str = "", size: float = 0) -> dict:
+        """市价平仓 (V2 正确端点: place-order + tradeSide=close)。
+
+        hold_side: 持仓方向 long / short (决定平仓 side: 平多=sell, 平空=buy)
+        size: 平仓数量 (0 = 全平)
+        """
+        side = "sell" if hold_side == "long" else "buy"
         body = {
             "symbol": f"{symbol}USDT",
             "productType": "USDT-FUTURES",
             "marginCoin": "USDT",
+            "size": str(size) if size > 0 else "0",
+            "side": side,
+            "tradeSide": "close",
+            "orderType": "market",
         }
-        if side:
-            body["holdSide"] = side  # long / short
-        return await self._request("POST", "/api/v2/mix/order/close-position", body)
+        if hold_side:
+            body["holdSide"] = hold_side
+        return await self._request("POST", "/api/v2/mix/order/place-order", body)
 
     # ═══ 止盈止损 ═══════════════════════════════
 

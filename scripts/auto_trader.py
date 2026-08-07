@@ -943,12 +943,20 @@ class AutoTrader:
             logger.info("🚫 开仓已停止 (OPEN_TRADING=0) — 仅管仓/平仓")
             return
 
-        # 满仓保护: 持仓≥5 或 可用保证金不足一仓 → 跳过开仓扫描 (省AI请求)
+        # 满仓保护: 持仓≥5 或 可用余额不足一仓 → 跳过开仓扫描 (省AI请求)
         try:
             n_pos = len(await self._executor.get_positions())
             if n_pos >= 5:
                 logger.info("⏭️ 已满仓 (%d/5) — 跳过开仓扫描, 仅管仓", n_pos)
                 return
+            # 可用余额不足一仓保证金(≈净值/6) → 也跳过
+            acct = await self._executor._trader.get_account()
+            if acct:
+                avail = float(getattr(acct, 'available', 0) or 0)
+                eq = float(getattr(acct, 'equity', 0) or 0)
+                if avail < eq / 6:
+                    logger.info("⏭️ 可用余额不足一仓 ($%.2f < 净值/6) — 跳过开仓扫描", avail)
+                    return
         except Exception:
             pass
 
