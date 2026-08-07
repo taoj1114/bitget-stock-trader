@@ -33,3 +33,4 @@ htmlcov/
 .pytest_cache/
 *.db-shm
 *.db-wal
+data/logs/
