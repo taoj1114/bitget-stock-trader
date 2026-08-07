@@ -118,6 +118,65 @@ def _holding_hours(pos) -> float:
         return 0.0
 
 
+def _breakout_signal(klines, lookback: int = 40) -> str:
+    """横盘整理后放量突破检测 (借鉴 daily_stock_analysis volume_breakout 策略)。
+
+    形态 (短线高胜率经典):
+      - 近20根横盘整理: 振幅<15% (range_20d 约束)
+      - 当前放量突破: 量比≥2 (volume_ratio_min=2.0)
+      - 突破近20根高点: 收盘价 > 前20根最高价
+      - 实体饱满: 实体>50% (body_pct_min=0.5)
+    风险排除 (risk_profile):
+      - 当日涨幅>9.9% 太猛 → 不追 (chase_change_pct)
+      - 异常放量>9x → 出货嫌疑 (abnormal_volume_ratio)
+    """
+    try:
+        if not klines or len(klines) < 25:
+            return ""
+        ks = list(klines)
+        k = ks[-1]
+        o, c, h, l = float(k.open), float(k.close), float(k.high), float(k.low)
+        # 横盘区间: 近20根 (不含当前)
+        win = ks[-21:-1]
+        if not win:
+            return ""
+        win_hi = max(float(x.high) for x in win)
+        win_lo = min(float(x.low) for x in win)
+        win_mid = (win_hi + win_lo) / 2
+        range_pct = (win_hi - win_lo) / win_mid * 100 if win_mid else 0
+        # 突破: 收盘 > 横盘高点
+        if c <= win_hi:
+            return ""
+        # 横盘要求: 振幅<15% (横盘整理, 非单边)
+        if range_pct > 15:
+            return ""
+        # 量比 (当前 vs 前20根均量)
+        vols = [float(x.volume or 0) for x in win]
+        avg_vol = sum(vols) / len(vols) if vols else 0
+        cur_vol = float(k.volume or 0)
+        vr = cur_vol / avg_vol if avg_vol > 0 else 0
+        if vr < 2.0:
+            return ""
+        # 实体饱满
+        rng = max(h - l, 1e-9)
+        body_pct = abs(c - o) / rng
+        if body_pct < 0.5:
+            return ""
+        # 当日涨幅风险
+        prev_close = float(ks[-2].close) if len(ks) >= 2 else c
+        chg = (c / prev_close - 1) * 100 if prev_close else 0
+        if chg > 9.9:
+            return ""
+        # 异常放量 (>9x = 出货嫌疑)
+        if vr > 9.0:
+            return ""
+        side = "多" if c > o else "空"
+        return (f"🚀4H放量突破(短线做{side}信号!): 横盘整理{range_pct:.0f}%后突破前高"
+                f"${win_hi:.2f}, 量{vr:.1f}x+实体{body_pct:.0%} → 突破启动, 顺势入场\n")
+    except Exception:
+        return ""
+
+
 def _reversal_kline(klines, lookback: int = 10) -> str:
     """4H反转K线识别 (用户核心形态: 找到那根反转K线, 用价格位置定方向)。
 
@@ -585,10 +644,14 @@ class AutoTrader:
                 pass
             # 4H反转K线识别 (用户形态: 小实体+长影+量价背离 → 强反转信号)
             reversal_4h = _reversal_kline(k_4h)
+            # 4H横盘放量突破检测 (daily_stock_analysis volume_breakout)
+            breakout_4h = _breakout_signal(k_4h)
             # 走势形状分析 (5m K线轨迹)
             trend_str = _trend_shape(k_5m)
             if reversal_4h:
                 trend_str = reversal_4h + trend_str
+            if breakout_4h:
+                trend_str = breakout_4h + trend_str
 
             ai_inp = AIInput(
                 symbol=symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
@@ -748,10 +811,14 @@ class AutoTrader:
                     except Exception: pass
                     # 4H反转K线识别 (持仓中: 反向反转K线=离场信号)
                     reversal_4h = _reversal_kline(k_4h)
+                    # 4H横盘放量突破检测 (持仓中: 同向突破=持有, 反向突破=认错)
+                    breakout_4h = _breakout_signal(k_4h)
                     # 走势形状分析 (5m K线轨迹)
                     trend_str = _trend_shape(k_5m)
                     if reversal_4h:
                         trend_str = reversal_4h + trend_str
+                    if breakout_4h:
+                        trend_str = breakout_4h + trend_str
                     ai_inp = AIInput(
                         symbol=pos.symbol, mark_price=q.mark_price, change_pct=q.change_pct*100,
                         klines_1h=k_1h, klines_4h=k_4h, klines_1d=[],
